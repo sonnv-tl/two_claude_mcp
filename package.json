@@ -1,0 +1,19 @@
+{
+  "name": "two-claude-mcp",
+  "private": true,
+  "version": "0.1.0",
+  "description": "MCP hub cho nhiều Claude session trao đổi với nhau (DEV ↔ QA) + web theo dõi",
+  "workspaces": [
+    "packages/shared",
+    "packages/hub",
+    "packages/bridge",
+    "packages/web"
+  ],
+  "scripts": {
+    "build": "npm run build -w @tcm/shared && npm run build -w @tcm/hub && npm run build -w @tcm/bridge && npm run build -w @tcm/web",
+    "hub": "npm run start -w @tcm/hub",
+    "dev:web": "npm run dev -w @tcm/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "smoke": "node scripts/smoke.mjs"
+  }
+}
