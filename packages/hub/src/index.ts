@@ -14,7 +14,7 @@ import {
   type ParticipantKind,
   type ServerOp,
 } from "@tcm/shared";
-import { Store, type ParticipantRow } from "./db.js";
+import { Store, HUMAN_NAME, type ParticipantRow } from "./db.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -60,7 +60,8 @@ function toParticipant(room: string, p: ParticipantRow): Participant {
     kind: p.kind,
     status: p.status,
     lastSeen: p.lastSeen,
-    online: roomOnline(room).has(p.name),
+    // "user" online khi có ít nhất một tab web đang mở phòng
+    online: roomOnline(room).has(p.name) || (p.name === HUMAN_NAME && roomViewers(room).size > 0),
   };
 }
 
@@ -104,7 +105,7 @@ function handle(conn: Conn, op: ClientOp) {
       Object.assign(conn, { kind: "viewer", room });
       roomViewers(room).add(conn);
       send(conn, { op: "welcome", reqId, room, self: null, unread: [] });
-      send(conn, { op: "participants", room, participants: participantsOf(room) });
+      broadcastParticipants(room); // "user" chuyển sang online
       return;
     }
 
@@ -139,8 +140,10 @@ function handle(conn: Conn, op: ClientOp) {
     return reply(participantsOf(conn.room));
   }
 
-  if (conn.kind === "viewer") return fail("Viewer chỉ được xem");
-  const { room, name } = conn;
+  // Web (viewer) chỉ được gửi tin, dưới tên "user"
+  if (conn.kind === "viewer" && op.op !== "send") return fail("Viewer chỉ được xem và gửi tin");
+  const room = conn.room;
+  const name = conn.kind === "viewer" ? HUMAN_NAME : conn.name;
   store.touch(room, name);
 
   switch (op.op) {
@@ -148,6 +151,7 @@ function handle(conn: Conn, op: ClientOp) {
       const content = op.content?.trim();
       if (!content) return fail("Nội dung rỗng");
       const to = (op.to ?? BROADCAST).trim();
+      if (to === name) return fail("Không thể gửi tin cho chính mình");
       if (to !== BROADCAST && !store.getParticipant(room, to)) {
         const names = store.listParticipants(room).map((p) => p.name);
         return fail(`Không có participant "${to}" trong phòng. Có: ${[BROADCAST, ...names].join(", ")}`);
@@ -178,6 +182,7 @@ function onClose(conn: Conn) {
   if (conn.kind === null) return;
   if (conn.kind === "viewer") {
     roomViewers(conn.room).delete(conn);
+    if (roomViewers(conn.room).size === 0) broadcastParticipants(conn.room);
     return;
   }
   const map = roomOnline(conn.room);

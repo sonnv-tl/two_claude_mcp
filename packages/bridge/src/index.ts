@@ -18,6 +18,13 @@ const name = process.env.AGENT_NAME?.trim() || role;
 const room = process.env.HUB_ROOM?.trim() || "default";
 const url = process.env.HUB_URL?.trim() || `ws://127.0.0.1:${DEFAULT_HUB_PORT}/ws`;
 
+/**
+ * Chế độ channel: đẩy tin thẳng vào session qua `notifications/claude/channel`.
+ * Chỉ bật khi session được mở với `--dangerously-load-development-channels server:team-hub`
+ * (script claude-as tự làm) — nếu không, Claude Code bỏ qua notification một cách im lặng.
+ */
+const channelMode = /^(1|true|yes|on)$/i.test(process.env.HUB_CHANNEL ?? "");
+
 const hub = new HubClient({ url, room, name, role, kind: "agent" });
 
 // ---------- Inbox: tin gửi tới mình, chưa giao cho Claude ----------
@@ -25,18 +32,38 @@ const hub = new HubClient({ url, room, name, role, kind: "agent" });
 const inbox: ChatMessage[] = [];
 const seen = new Set<number>();
 let waiters: (() => void)[] = [];
+let mcpReady = false;
 
 function enqueue(msg: ChatMessage) {
-  if (seen.has(msg.id) || !isAddressedTo(msg, name)) return;
-  seen.add(msg.id);
   inbox.push(msg);
   const w = waiters;
   waiters = [];
   w.forEach((fn) => fn());
 }
 
-hub.on("welcome", (unread: ChatMessage[]) => unread.forEach(enqueue));
-hub.on("message", (msg: ChatMessage) => enqueue(msg));
+function onIncoming(msg: ChatMessage, allowPush: boolean) {
+  if (seen.has(msg.id) || !isAddressedTo(msg, name)) return;
+  seen.add(msg.id);
+  // Đang có wait_for_messages chờ → trả qua tool cho nhanh; ngoài ra ở chế độ channel thì push.
+  if (allowPush && channelMode && mcpReady && waiters.length === 0) void push(msg);
+  else enqueue(msg);
+}
+
+async function push(msg: ChatMessage) {
+  const meta: Record<string, string> = { from: msg.from, to: msg.to, type: msg.type, msg_id: String(msg.id) };
+  if (msg.replyTo) meta.reply_to = String(msg.replyTo);
+  try {
+    await server.server.notification({ method: "notifications/claude/channel", params: { content: msg.content, meta } });
+    hub.ack(msg.id);
+  } catch (e) {
+    log("push channel lỗi, chuyển vào inbox:", e);
+    enqueue(msg);
+  }
+}
+
+// Tin chưa đọc lúc (re)connect: để trong inbox — session có thể chưa sẵn sàng nhận channel event.
+hub.on("welcome", (unread: ChatMessage[]) => unread.forEach((m) => onIncoming(m, false)));
+hub.on("message", (msg: ChatMessage) => onIncoming(msg, true));
 
 /** Lấy hết tin trong inbox ra, ack lên hub */
 function drain(): ChatMessage[] {
@@ -110,9 +137,15 @@ async function guard(fn: () => Promise<ToolResult>): Promise<ToolResult> {
 // ---------- MCP server ----------
 
 const server = new McpServer(
-  { name: "team-hub", version: "0.1.0" },
-  { instructions: buildInstructions({ name, role, room }) },
+  { name: "team-hub", version: "0.2.0" },
+  {
+    capabilities: channelMode ? { experimental: { "claude/channel": {} } } : {},
+    instructions: buildInstructions({ name, role, room, channelMode }),
+  },
 );
+server.server.oninitialized = () => {
+  mcpReady = true;
+};
 
 server.registerTool(
   "send_message",
@@ -151,7 +184,7 @@ server.registerTool(
       "Chờ (block) tới khi có tin nhắn mới gửi cho bạn hoặc hết timeout. Gọi khi bạn đã xong việc hiện tại " +
       "hoặc đang chờ phản hồi từ người khác. Trả về ngay nếu đã có tin chưa đọc.",
     inputSchema: {
-      timeout_seconds: z.number().int().min(1).max(600).optional().describe("Mặc định 120, tối đa 600"),
+      timeout_seconds: z.number().int().min(1).max(600).optional().describe("Mặc định 300, tối đa 600"),
     },
   },
   ({ timeout_seconds }, extra) =>
@@ -159,13 +192,17 @@ server.registerTool(
       if (!hub.connected && !inbox.length) {
         return result(`Chưa kết nối được hub (${url}). ${hub.lastError ?? ""}`.trim(), { isError: true });
       }
+      const secs = timeout_seconds ?? 300;
       await hub.setStatus("đang chờ tin nhắn…").catch(() => {});
-      await waitForInbox((timeout_seconds ?? 120) * 1000, extra.signal);
+      await waitForInbox(secs * 1000, extra.signal);
       await hub.setStatus(null).catch(() => {});
       if (!inbox.length) {
         return result(
-          `Không có tin mới sau ${timeout_seconds ?? 120}s. Nếu vẫn đang chờ người khác, gọi lại wait_for_messages; ` +
-            "nếu không còn việc, hãy tóm tắt cho user rồi kết thúc.",
+          channelMode
+            ? `Không có tin mới sau ${secs}s. Nếu vẫn đang chờ người khác, gọi lại wait_for_messages; ` +
+                "nếu không còn việc, cứ kết thúc lượt: tin mới sẽ được đẩy tới."
+            : `Không có tin mới sau ${secs}s. Gọi lại wait_for_messages ngay để tiếp tục chờ ` +
+                "(đừng kết thúc lượt, nếu không bạn sẽ không nhận được tin từ đồng đội / user).",
         );
       }
       return result("Có tin mới:");
@@ -239,7 +276,7 @@ server.registerTool(
 hub.start();
 const transport = new StdioServerTransport();
 await server.connect(transport);
-log(`MCP bridge sẵn sàng: name=${name} role=${role} room=${room} hub=${url}`);
+log(`MCP bridge sẵn sàng: name=${name} role=${role} room=${room} hub=${url} mode=${channelMode ? "channel" : "long-poll"}`);
 
 const shutdown = () => {
   hub.stop();

@@ -19,13 +19,24 @@ const hub = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", jo
 });
 await new Promise((ok) => hub.stdout.on("data", (d) => String(d).includes("[hub] http") && ok()));
 
-async function agent(name) {
+async function agent(name, { channel = false } = {}) {
   const client = new Client({ name: `smoke-${name}`, version: "0" });
+  const pushed = []; // notifications/claude/channel nhận được (giả lập Claude Code)
+  client.fallbackNotificationHandler = async (n) => {
+    if (n.method === "notifications/claude/channel") pushed.push(n.params);
+  };
   await client.connect(
     new StdioClientTransport({
       command: process.execPath,
       args: [join(root, "packages/bridge/dist/index.js")],
-      env: { ...process.env, HUB_URL: `ws://127.0.0.1:${port}/ws`, HUB_ROOM: room, AGENT_NAME: name, AGENT_ROLE: name },
+      env: {
+        ...process.env,
+        HUB_URL: `ws://127.0.0.1:${port}/ws`,
+        HUB_ROOM: room,
+        AGENT_NAME: name,
+        AGENT_ROLE: name,
+        HUB_CHANNEL: channel ? "1" : "0",
+      },
       stderr: "ignore",
     }),
   );
@@ -33,8 +44,35 @@ async function agent(name) {
     const r = await client.callTool({ name: tool, arguments: args });
     return { text: r.content.map((c) => c.text).join("\n"), isError: !!r.isError };
   };
-  return { client, call };
+  return { client, call, pushed };
 }
+
+/** Giả lập web UI: kết nối viewer, gửi tin dưới tên "user" */
+async function viewer() {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  const inbox = [];
+  await new Promise((ok, fail) => {
+    ws.onopen = ok;
+    ws.onerror = fail;
+  });
+  ws.onmessage = (e) => inbox.push(JSON.parse(e.data));
+  ws.send(JSON.stringify({ op: "hello", kind: "viewer", room }));
+  let seq = 0;
+  const request = (op) =>
+    new Promise((ok) => {
+      const reqId = `v${++seq}`;
+      ws.send(JSON.stringify({ ...op, reqId }));
+      const t = setInterval(() => {
+        const r = inbox.find((o) => o.reqId === reqId);
+        if (r) {
+          clearInterval(t);
+          ok(r);
+        }
+      }, 20);
+    });
+  return { ws, inbox, request };
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let failed = 0;
 const check = (label, cond, extra = "") => {
@@ -89,11 +127,48 @@ try {
   check("qa restart nhận lại tin gửi lúc offline", offline.text.includes("tin gửi khi qa offline"), offline.text);
   check("tin đã đọc trước đó không bị giao lại", !offline.text.includes("POST /login"), offline.text);
 
-  // REST cho web
+  // REST cho web (4 tin tính tới thời điểm này)
   const hist = await (await fetch(`http://127.0.0.1:${port}/api/rooms/${room}/messages`)).json();
   check("REST history có đủ tin", hist.filter((m) => m.type !== "system").length === 4, JSON.stringify(hist.map((m) => m.content)));
 
+  // ---- Phase 2: web chat + channel mode ----
   await dev.client.close();
+  await sleep(200);
+  const devCh = await agent("dev", { channel: true });
+  await sleep(500);
+  check("instructions channel mode nhắc <channel>", (devCh.client.getInstructions() ?? "").includes('<channel source="team-hub"'));
+
+  const web = await viewer();
+  await sleep(200);
+  const ps2 = await devCh.call("list_participants");
+  check("user online khi web đang mở", /- user .*online/.test(ps2.text), ps2.text);
+
+  const r = await web.request({ op: "send", to: "@all", content: "Làm tính năng đổi mật khẩu, AC: ...", type: "chat" });
+  check("web gửi @all thành công, from=user", r.op === "result" && r.data.from === "user", JSON.stringify(r));
+  await sleep(300);
+  check(
+    "dev (channel) nhận push notifications/claude/channel kèm meta",
+    devCh.pushed.some((p) => p.content.includes("đổi mật khẩu") && p.meta.from === "user" && p.meta.to === "@all" && p.meta.msg_id),
+    JSON.stringify(devCh.pushed),
+  );
+  const devInboxAfterPush = await devCh.call("check_inbox");
+  check("tin đã push không bị giao trùng qua inbox", !devInboxAfterPush.text.includes("đổi mật khẩu"), devInboxAfterPush.text);
+  const qaWeb = await qa2.call("check_inbox");
+  check("qa (long-poll) nhận tin @all của user qua inbox", qaWeb.text.includes("đổi mật khẩu") && qaWeb.text.includes("user → @all"), qaWeb.text);
+
+  // Channel mode: đang wait_for_messages thì trả qua tool, không push
+  const w2 = devCh.call("wait_for_messages", { timeout_seconds: 10 });
+  await sleep(300);
+  await qa2.call("send_message", { to: "dev", content: "câu hỏi trong lúc dev đang chờ", type: "question" });
+  const w2r = await w2;
+  check("channel mode + đang wait → nhận qua tool", w2r.text.includes("câu hỏi trong lúc dev đang chờ"), w2r.text);
+  check("… và không bị push trùng", !devCh.pushed.some((p) => p.content.includes("câu hỏi trong lúc")), JSON.stringify(devCh.pushed));
+
+  const bad2 = await web.request({ op: "status", text: "x" });
+  check("viewer không được đổi status", bad2.op === "error", JSON.stringify(bad2));
+
+  web.ws.close();
+  await devCh.client.close();
   await qa2.client.close();
 } catch (e) {
   console.error(e);

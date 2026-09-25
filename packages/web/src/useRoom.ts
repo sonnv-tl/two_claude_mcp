@@ -1,5 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import type { ChatMessage, Participant, RoomInfo, ServerOp } from "@tcm/shared";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { ChatMessage, MessageType, Participant, RoomInfo, ServerOp } from "@tcm/shared";
+
+export interface OutgoingMessage {
+  to: string;
+  content: string;
+  type?: MessageType;
+  replyTo?: number | null;
+}
 
 export type ConnState = "connecting" | "open" | "closed";
 
@@ -14,6 +21,9 @@ export function useRoom(room: string | null) {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [conn, setConn] = useState<ConnState>("connecting");
   const lastId = useRef(0);
+  const wsRef = useRef<WebSocket | null>(null);
+  const pending = useRef(new Map<string, { resolve: (m: ChatMessage) => void; reject: (e: Error) => void }>());
+  const seq = useRef(0);
 
   useEffect(() => {
     setMessages([]);
@@ -38,6 +48,7 @@ export function useRoom(room: string | null) {
     const connect = () => {
       setConn("connecting");
       ws = new WebSocket(wsUrl());
+      wsRef.current = ws;
       ws.onopen = async () => {
         ws!.send(JSON.stringify({ op: "hello", kind: "viewer", room }));
         // Tải lịch sử (lần đầu: 200 tin gần nhất; reconnect: tin mới hơn lastId)
@@ -50,6 +61,13 @@ export function useRoom(room: string | null) {
         const op = JSON.parse(ev.data) as ServerOp;
         if (op.op === "message") merge([op.message]);
         else if (op.op === "participants") setParticipants(op.participants);
+        else if (op.op === "result" || op.op === "error") {
+          const p = op.reqId ? pending.current.get(op.reqId) : undefined;
+          if (!p) return;
+          pending.current.delete(op.reqId!);
+          if (op.op === "result") p.resolve(op.data as ChatMessage);
+          else p.reject(new Error(op.error));
+        }
       };
       ws.onclose = () => {
         setConn("closed");
@@ -65,7 +83,21 @@ export function useRoom(room: string | null) {
     };
   }, [room]);
 
-  return { messages, participants, conn };
+  /** Gửi tin dưới tên "user" */
+  const send = useCallback((m: OutgoingMessage) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error("Chưa kết nối hub"));
+    const reqId = `w${++seq.current}`;
+    return new Promise<ChatMessage>((resolve, reject) => {
+      pending.current.set(reqId, { resolve, reject });
+      ws.send(JSON.stringify({ op: "send", reqId, ...m }));
+      setTimeout(() => {
+        if (pending.current.delete(reqId)) reject(new Error("Hub không phản hồi"));
+      }, 10_000);
+    });
+  }, []);
+
+  return { messages, participants, conn, send };
 }
 
 export function useRooms(intervalMs = 5000) {

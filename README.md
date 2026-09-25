@@ -10,7 +10,7 @@ Claude (QA)  ─stdio─ bridge ─┘
 
 - `packages/hub`: server trung tâm, route tin nhắn, lưu SQLite (`data/hub.db`), serve web ở `http://127.0.0.1:4747`.
 - `packages/bridge`: MCP server stdio. Mỗi Claude session spawn một bridge riêng, bridge cung cấp tools và persona.
-- `packages/web`: web UI theo dõi phòng (Phase 1: chỉ xem).
+- `packages/web`: web UI theo dõi phòng và chat với team (gửi `@all` hoặc riêng từng người).
 - `packages/shared`: kiểu dữ liệu và giao thức dùng chung.
 
 ## Cài đặt
@@ -37,7 +37,9 @@ npm run smoke        # test end-to-end: hub + 2 bridge
    powershell -ExecutionPolicy Bypass -File C:\laragon\www\two_claude_mcp\scripts\claude-as.ps1 -Role dev -Room login-feature
    powershell -ExecutionPolicy Bypass -File C:\laragon\www\two_claude_mcp\scripts\claude-as.ps1 -Role qa  -Room login-feature
    ```
-   Lần đầu Claude Code sẽ hỏi có tin tưởng MCP server trong `.mcp.json` không: chọn đồng ý.
+   Lần đầu Claude Code sẽ hỏi có tin tưởng MCP server trong `.mcp.json` không: chọn đồng ý. 
+
+   Mặc định script dùng **long-poll ở chế độ trực**: agent luôn đứng chờ trong `wait_for_messages`, nên tin từ web hoặc từ đồng đội đánh thức nó ngay. Nếu org của bạn đã bật channels (`channelsEnabled`), thêm `-Channel` (PowerShell) hoặc `CHANNEL=1` (bash) để đẩy tin thẳng vào session qua Claude Code channels. Với QA, script nạp thêm Playwright MCP (`examples/qa-browser.mcp.json`) để test trên browser thật. Tắt bằng `-NoBrowser` hoặc `NO_BROWSER=1`.
 
    **Trong WSL / Git Bash**:
    ```bash
@@ -46,13 +48,14 @@ npm run smoke        # test end-to-end: hub + 2 bridge
    ```
    Nếu `claude` trong WSL là bản Windows (`claude.exe`, cài qua npm phía Windows), biến môi trường phải được khai báo trong `WSLENV` thì mới sang được phía Windows. Script đã làm việc này. Tự gõ tay thì như sau:
    ```bash
-   export AGENT_ROLE=qa AGENT_NAME=qa HUB_ROOM=test-feature
-   export WSLENV=AGENT_ROLE:AGENT_NAME:HUB_ROOM:HUB_URL
-   claude
+   export AGENT_ROLE=qa AGENT_NAME=qa HUB_ROOM=test-feature MCP_TOOL_TIMEOUT=900000
+   export WSLENV=AGENT_ROLE:AGENT_NAME:HUB_ROOM:HUB_URL:MCP_TOOL_TIMEOUT
+   claude "Vào chế độ trực: gọi wait_for_messages, xử lý việc, rồi lặp lại" \
+          --mcp-config 'C:\laragon\www\two_claude_mcp\examples\qa-browser.mcp.json'
    ```
    Hub vẫn chạy phía Windows (`npm run hub` trong PowerShell).
 
-4. Giao việc cho DEV (kèm Acceptance Criteria) ngay trong terminal DEV. Có thể báo QA rằng AC nằm ở đâu. Hai bên sẽ tự trao đổi và bạn theo dõi trên web.
+4. **Giao việc từ web**: ở ô chat chọn `@all` (hoặc gõ `@qa ...` / `@dev ...` ở đầu tin để gửi riêng), dán yêu cầu kèm Acceptance Criteria rồi Enter. DEV nhận phần implement + unit test, QA nhận phần test case + test trên browser, hai bên tự phối hợp. Di chuột vào một tin và bấm "trả lời" để trả lời tin đó.
 
 ## Tools mà mỗi session có
 
@@ -65,9 +68,9 @@ npm run smoke        # test end-to-end: hub + 2 bridge
 | `list_participants()` | Ai đang online, đang làm gì |
 | `set_status(text)` | Trạng thái hiển thị trên web |
 
-Tin mới được **đính kèm tự động vào kết quả của mọi tool** hub. Các loại tin: `chat`, `question`, `ac_deviation`, `test_case`, `bug_report`, `handoff`.
+Ở chế độ channel, tin được đẩy vào session dưới dạng `<channel source="team-hub" from=... type=... msg_id=...>`. Ở cả hai chế độ, tin chưa đọc cũng được **đính kèm vào kết quả của mọi tool** hub. Các loại tin: `chat`, `question`, `ac_deviation`, `test_case`, `bug_report`, `handoff`.
 
-Persona mặc định nằm trong `packages/bridge/src/personas.ts` (DEV sở hữu source, QA sở hữu test, QA viết test song song và báo lệch AC sớm). Có thể override bằng biến `AGENT_PERSONA_FILE=path/to/persona.md`.
+Persona mặc định nằm trong `packages/bridge/src/personas.ts`. **DEV**: source + unit/integration test, chạy app và báo URL cho QA. **QA**: không viết unit test; viết test case nghiệp vụ vào `qa/testcases/`, soát code để báo lệch AC sớm, chạy test case trên browser thật, ghi kết quả vào `qa/runs/`, báo bug kèm screenshot. Có thể override bằng biến `AGENT_PERSONA_FILE=path/to/persona.md`.
 
 ## Biến môi trường
 
@@ -79,6 +82,7 @@ Persona mặc định nằm trong `packages/bridge/src/personas.ts` (DEV sở h�
 | `HUB_ROOM` | bridge | `default` |
 | `AGENT_NAME`, `AGENT_ROLE` | bridge | `dev`, `dev` (theo `.mcp.json` mẫu) |
 | `AGENT_PERSONA_FILE` | bridge | (persona có sẵn theo role) |
+| `HUB_CHANNEL` | bridge | `0` (`1` khi chạy script với `-Channel` / `CHANNEL=1`) |
 
 ## Phát triển web
 
@@ -90,6 +94,7 @@ npm run dev:web   # terminal 2 → http://localhost:5173 (proxy /api, /ws về h
 ## Lộ trình
 
 - [x] **Phase 1**: hub + bridge (long-poll) + web chỉ xem
-- [ ] **Phase 2**: đẩy tin realtime vào session (Claude Code channels), ô chat cho user trên web, Pause/Resume, chống loop
+- [x] **Phase 2a**: đẩy tin realtime vào session (Claude Code channels), ô chat cho user trên web, QA test bằng browser
+- [ ] **Phase 2b**: Pause/Resume, chống loop agent↔agent
 - [ ] **Phase 3**: bảng task/bug, tin có cấu trúc (bug report, AC checklist)
 - [ ] **Phase 4**: export hội thoại, auth khi mở ra LAN, script demo

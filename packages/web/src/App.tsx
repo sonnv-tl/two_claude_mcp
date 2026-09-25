@@ -1,8 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { MESSAGE_TYPES, type ChatMessage, type MessageType, type Participant } from "@tcm/shared";
-import { useRoom, useRooms } from "./useRoom";
+import { BROADCAST, MESSAGE_TYPES, type ChatMessage, type MessageType, type Participant } from "@tcm/shared";
+import { useRoom, useRooms, type OutgoingMessage } from "./useRoom";
+
+const HUMAN = "user";
+const USER_TYPES: MessageType[] = ["chat", "question", "handoff"];
 
 const TYPE_LABEL: Record<MessageType, string> = {
   chat: "chat",
@@ -40,8 +43,11 @@ function useHashRoom(): [string | null, (r: string) => void] {
 export function App() {
   const rooms = useRooms();
   const [room, setRoom] = useHashRoom();
-  const { messages, participants, conn } = useRoom(room);
+  const { messages, participants, conn, send } = useRoom(room);
   const [hidden, setHidden] = useState<Set<MessageType>>(new Set());
+  const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
+
+  useEffect(() => setReplyTo(null), [room]);
 
   // Mặc định mở phòng hoạt động gần nhất
   useEffect(() => {
@@ -86,10 +92,18 @@ export function App() {
             ))}
           </div>
         </header>
-        <MessageList messages={visible} byId={byId} participants={participants} />
-        <footer className="composer-placeholder muted small">
-          Phase 1: chế độ xem. Ô chat cho bạn sẽ có ở Phase 2.
-        </footer>
+        <MessageList messages={visible} byId={byId} participants={participants} onReply={setReplyTo} />
+        <Composer
+          key={room ?? ""}
+          participants={participants}
+          disabled={!room || conn !== "open"}
+          replyTo={replyTo}
+          onCancelReply={() => setReplyTo(null)}
+          onSend={async (m) => {
+            await send(m);
+            setReplyTo(null);
+          }}
+        />
       </main>
 
       <aside className="people">
@@ -111,14 +125,112 @@ export function App() {
   );
 }
 
+function Composer({
+  participants,
+  disabled,
+  replyTo,
+  onCancelReply,
+  onSend,
+}: {
+  participants: Participant[];
+  disabled: boolean;
+  replyTo: ChatMessage | null;
+  onCancelReply: () => void;
+  onSend: (m: OutgoingMessage) => Promise<void>;
+}) {
+  const [text, setText] = useState("");
+  const [to, setTo] = useState(BROADCAST);
+  const [type, setType] = useState<MessageType>("chat");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const recipients = participants.filter((p) => p.name !== HUMAN);
+
+  // Bấm "trả lời" một tin → gửi lại cho người đó
+  useEffect(() => {
+    if (replyTo && replyTo.from !== HUMAN && replyTo.from !== "hub") setTo(replyTo.from);
+    if (replyTo) inputRef.current?.focus();
+  }, [replyTo]);
+
+  const submit = async () => {
+    let content = text.trim();
+    let target = to;
+    // "@qa nội dung" ở đầu tin → đổi người nhận
+    const m = content.match(/^@([\w.-]+)\s+([\s\S]+)$/);
+    if (m && (m[1] === "all" || recipients.some((p) => p.name === m[1]))) {
+      target = m[1] === "all" ? BROADCAST : m[1];
+      content = m[2].trim();
+    }
+    if (!content || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onSend({ to: target, content, type, replyTo: replyTo?.id ?? null });
+      setText("");
+      setType("chat");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+      inputRef.current?.focus();
+    }
+  };
+
+  return (
+    <footer className="composer">
+      {replyTo && (
+        <div className="composer-reply small">
+          ↳ trả lời #{replyTo.id} của <strong>{replyTo.from}</strong>: {replyTo.content.slice(0, 100)}
+          <button className="link" onClick={onCancelReply}>huỷ</button>
+        </div>
+      )}
+      {error && <div className="composer-error small">{error}</div>}
+      <div className="composer-row">
+        <select value={to} onChange={(e) => setTo(e.target.value)} disabled={disabled} title="Người nhận">
+          <option value={BROADCAST}>@all (cả phòng)</option>
+          {recipients.map((p) => (
+            <option key={p.name} value={p.name}>
+              @{p.name}{p.online ? "" : " (offline)"}
+            </option>
+          ))}
+        </select>
+        <select value={type} onChange={(e) => setType(e.target.value as MessageType)} disabled={disabled} title="Loại tin">
+          {USER_TYPES.map((t) => (
+            <option key={t} value={t}>{TYPE_LABEL[t]}</option>
+          ))}
+        </select>
+        <textarea
+          ref={inputRef}
+          value={text}
+          rows={Math.min(8, Math.max(1, text.split("\n").length))}
+          placeholder={disabled ? "Chưa kết nối…" : "Nhắn cho team… (Enter gửi · Shift+Enter xuống dòng · @qa để gửi riêng)"}
+          disabled={disabled}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              void submit();
+            }
+          }}
+        />
+        <button className="send" onClick={() => void submit()} disabled={disabled || busy || !text.trim()}>
+          Gửi
+        </button>
+      </div>
+    </footer>
+  );
+}
+
 function MessageList({
   messages,
   byId,
   participants,
+  onReply,
 }: {
   messages: ChatMessage[];
   byId: Map<number, ChatMessage>;
   participants: Participant[];
+  onReply: (m: ChatMessage) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -148,6 +260,7 @@ function MessageList({
               <span className="muted small">
                 #{m.id} · {new Date(m.createdAt).toLocaleTimeString("vi-VN", { hour12: false })}
               </span>
+              <button className="link small reply-btn" onClick={() => onReply(m)}>trả lời</button>
             </div>
             {m.replyTo && (
               <a className="reply small muted" href={`#m${m.replyTo}`} onClick={(e) => {
