@@ -3,6 +3,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { BROADCAST, MESSAGE_TYPES, type ChatMessage, type MessageType, type Participant } from "@tcm/shared";
 import { useRoom, useRooms, type OutgoingMessage } from "./useRoom";
+import { KickoffDialog } from "./KickoffDialog";
 
 const HUMAN = "user";
 const USER_TYPES: MessageType[] = ["chat", "question", "handoff"];
@@ -29,6 +30,43 @@ function colorOf(name: string, participants: Participant[]) {
   return PALETTE[h % PALETTE.length];
 }
 
+/** Âm thanh + thông báo desktop khi agent cần user ở terminal, hoặc hỏi user */
+function useAttentionAlerts(room: string | null, participants: Participant[]) {
+  const prev = useRef(new Map<string, string | null>());
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission();
+  }, []);
+  useEffect(() => {
+    prev.current = new Map();
+  }, [room]);
+  useEffect(() => {
+    for (const p of participants) {
+      const before = prev.current.get(p.name);
+      if (p.attention && p.attention !== before && prev.current.has(p.name)) alertUser(`${p.name}: ${p.attention}`);
+      prev.current.set(p.name, p.attention);
+    }
+  }, [participants]);
+}
+
+function alertUser(text: string) {
+  try {
+    const ctx = new AudioContext();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.frequency.value = 880;
+    g.gain.setValueAtTime(0.15, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+    o.connect(g).connect(ctx.destination);
+    o.start();
+    o.stop(ctx.currentTime + 0.4);
+  } catch {
+    /* trình duyệt chặn âm thanh khi chưa tương tác */
+  }
+  if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
+    new Notification("Team Hub", { body: text });
+  }
+}
+
 function useHashRoom(): [string | null, (r: string) => void] {
   const read = () => decodeURIComponent(location.hash.replace(/^#\/?/, "")) || null;
   const [room, setRoom] = useState<string | null>(read);
@@ -43,9 +81,11 @@ function useHashRoom(): [string | null, (r: string) => void] {
 export function App() {
   const rooms = useRooms();
   const [room, setRoom] = useHashRoom();
-  const { messages, participants, conn, send } = useRoom(room);
+  const { messages, participants, conn, send, onDuty, setDuty } = useRoom(room);
+  useAttentionAlerts(room, participants);
   const [hidden, setHidden] = useState<Set<MessageType>>(new Set());
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
+  const [kickoffOpen, setKickoffOpen] = useState(false);
 
   useEffect(() => setReplyTo(null), [room]);
 
@@ -66,6 +106,7 @@ export function App() {
 
   return (
     <div className="layout">
+      {kickoffOpen && room && <KickoffDialog room={room} onClose={() => setKickoffOpen(false)} />}
       <aside className="rooms">
         <h1>Team Hub</h1>
         <div className="section-title">Phòng</div>
@@ -83,6 +124,17 @@ export function App() {
           <div>
             <strong>{room ? `#${room}` : "—"}</strong>
             <span className={`conn conn-${conn}`}>{conn === "open" ? "live" : conn === "connecting" ? "đang kết nối…" : "mất kết nối"}</span>
+            <button
+              className={`duty ${onDuty ? "on" : "off"}`}
+              disabled={conn !== "open"}
+              title={onDuty ? "Agent ở lại chờ việc sau mỗi lượt. Bấm để cho agent kết thúc lượt." : "Agent sẽ kết thúc lượt khi xong việc. Bấm để bật lại."}
+              onClick={() => void setDuty(!onDuty).catch((e) => alert(e.message))}
+            >
+              {onDuty ? "● Đang trực" : "○ Nghỉ trực"}
+            </button>
+            <button className="duty" disabled={!room} onClick={() => setKickoffOpen(true)} title="Soạn và gửi tin kickoff ticket cho @all">
+              🎫 Kickoff
+            </button>
           </div>
           <div className="filters">
             {MESSAGE_TYPES.map((t) => (
@@ -109,13 +161,17 @@ export function App() {
       <aside className="people">
         <div className="section-title">Thành viên</div>
         {participants.map((p) => (
-          <div key={p.name} className="person">
+          <div key={p.name} className={`person ${p.attention ? "alert" : ""}`}>
             <span className={`dot ${p.online ? "on" : ""}`} />
             <div>
               <div>
                 <strong style={{ color: colorOf(p.name, participants) }}>{p.name}</strong>{" "}
                 <span className="muted small">{p.role || p.kind}</span>
+                {p.online && p.kind === "agent" && (
+                  <span className={`chip ${p.waiting ? "idle" : "busy"}`}>{p.waiting ? "chờ việc" : "đang làm"}</span>
+                )}
               </div>
+              {p.attention && <div className="small attention">{p.attention}</div>}
               {p.status && <div className="small status">{p.status}</div>}
             </div>
           </div>

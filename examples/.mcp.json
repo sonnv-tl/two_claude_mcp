@@ -5,9 +5,9 @@
       "args": ["C:/laragon/www/two_claude_mcp/packages/bridge/dist/index.js"],
       "env": {
         "HUB_URL": "${HUB_URL:-ws://127.0.0.1:4747/ws}",
-        "HUB_ROOM": "${HUB_ROOM:-default}",
-        "AGENT_NAME": "${AGENT_NAME:-dev}",
-        "AGENT_ROLE": "${AGENT_ROLE:-dev}",
+        "HUB_ROOM": "${HUB_ROOM:-}",
+        "AGENT_NAME": "${AGENT_NAME:-}",
+        "AGENT_ROLE": "${AGENT_ROLE:-}",
         "HUB_CHANNEL": "${HUB_CHANNEL:-0}"
       }
     }

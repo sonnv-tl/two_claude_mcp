@@ -167,6 +167,55 @@ try {
   const bad2 = await web.request({ op: "status", text: "x" });
   check("viewer không được đổi status", bad2.op === "error", JSON.stringify(bad2));
 
+  // ---- Hooks (scripts/hook.mjs), chạy như Claude Code gọi ----
+  const runHook = (event, name, input = {}, extraEnv = {}) =>
+    new Promise((ok) => {
+      const p = spawn(process.execPath, [join(root, "scripts/hook.mjs"), event], {
+        env: { ...process.env, HUB_URL: `ws://127.0.0.1:${port}/ws`, HUB_ROOM: room, AGENT_NAME: name, HUB_CHANNEL: "0", ...extraEnv },
+      });
+      let out = "", err = "";
+      p.stdout.on("data", (d) => (out += d));
+      p.stderr.on("data", (d) => (err += d));
+      p.on("close", (code) => ok({ code, out, err }));
+      p.stdin.end(JSON.stringify({ hook_event_name: event, ...input }));
+    });
+  const qaInfo = async () => (await (await fetch(`http://127.0.0.1:${port}/api/rooms/${room}/participants`)).json()).find((p) => p.name === "qa");
+
+  const s1 = await runHook("stop", "qa");
+  check("Stop hook chặn kết thúc lượt (exit 2 + nhắc wait_for_messages)", s1.code === 2 && s1.err.includes("wait_for_messages"), JSON.stringify(s1));
+  const s2 = await runHook("stop", "qa");
+  check("Stop lần 2 liền mà không chờ → thả (chống vòng lặp)", s2.code === 0, JSON.stringify(s2));
+  check("… và web thấy cảnh báo rời trực", (await qaInfo()).attention?.includes("rời chế độ trực"), JSON.stringify(await qaInfo()));
+  await qa2.call("wait_for_messages", { timeout_seconds: 1 });
+  check("sau khi gọi wait_for_messages thì cảnh báo được xoá", (await qaInfo()).attention === null, JSON.stringify(await qaInfo()));
+  const s3 = await runHook("stop", "qa");
+  check("đã quay lại trực → Stop lại bị chặn", s3.code === 2, JSON.stringify(s3));
+
+  const waitP = qa2.call("wait_for_messages", { timeout_seconds: 20 });
+  await sleep(300);
+  check("web thấy qa đang chờ việc (waiting)", (await qaInfo()).waiting === true, JSON.stringify(await qaInfo()));
+  await runHook("notify", "qa", { notification_type: "permission_prompt" });
+  check("Notification permission_prompt → cảnh báo trên web", (await qaInfo()).attention?.includes("duyệt quyền"), JSON.stringify(await qaInfo()));
+  await runHook("clear", "qa");
+  check("PostToolUse → xoá cảnh báo", (await qaInfo()).attention === null, JSON.stringify(await qaInfo()));
+
+  const t0 = Date.now();
+  await web.request({ op: "duty", onDuty: false });
+  const woke = await waitP;
+  check("tắt trực trên web → wait_for_messages đang chờ trả về ngay", Date.now() - t0 < 3000 && woke.text.includes("TẮT chế độ trực"), woke.text);
+  const s4 = await runHook("stop", "qa");
+  check("tắt trực → Stop hook cho kết thúc lượt", s4.code === 0, JSON.stringify(s4));
+  const rooms = await (await fetch(`http://127.0.0.1:${port}/api/rooms`)).json();
+  check("REST rooms có onDuty=false", rooms.find((r) => r.name === room)?.onDuty === false, JSON.stringify(rooms));
+  await web.request({ op: "duty", onDuty: true });
+
+  const s5 = await runHook("stop", "qa", {}, { HUB_ROOM: "" });
+  check("session không thuộc team (thiếu HUB_ROOM) → hook không làm gì", s5.code === 0 && !s5.err, JSON.stringify(s5));
+  const s6 = await runHook("stop", "qa", {}, { HUB_URL: "ws://127.0.0.1:1/ws" });
+  check("hub không chạy → hook không cản session", s6.code === 0, JSON.stringify(s6));
+  const s7 = await runHook("session", "qa", { source: "compact" });
+  check("SessionStart (compact) in lời nhắc bối cảnh", s7.code === 0 && s7.out.includes("get_history"), JSON.stringify(s7));
+
   web.ws.close();
   await devCh.client.close();
   await qa2.client.close();

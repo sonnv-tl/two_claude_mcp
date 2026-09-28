@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# tcm cho WSL / Git Bash. Gợi ý thêm vào ~/.bashrc:
+#   alias tcm='bash /mnt/c/laragon/www/two_claude_mcp/scripts/tcm'
+# Trong WSL không có node Linux → dùng node.exe của Windows, truyền đường dẫn repo (Linux + Windows) cho tcm.mjs.
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+if [[ -n "${WSL_DISTRO_NAME:-}" ]]; then
+  NODE="$(command -v node.exe || true)"
+  [[ -z "$NODE" ]] && { echo "✘ không tìm thấy node.exe (Windows) trong PATH" >&2; exit 1; }
+  export WSLENV="${WSLENV:+$WSLENV:}HUB_PORT:HUB_DB/p"
+  exec "$NODE" "$(wslpath -w "$HERE/tcm.mjs")" --cwd "$(wslpath -w "$PWD")" --wsl-cwd "$PWD" --distro "$WSL_DISTRO_NAME" "$@"
+fi
+exec node "$HERE/tcm.mjs" --cwd "$PWD" "$@"

@@ -20,6 +20,7 @@ export function useRoom(room: string | null) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [conn, setConn] = useState<ConnState>("connecting");
+  const [onDuty, setOnDuty] = useState(true);
   const lastId = useRef(0);
   const wsRef = useRef<WebSocket | null>(null);
   const pending = useRef(new Map<string, { resolve: (m: ChatMessage) => void; reject: (e: Error) => void }>());
@@ -60,6 +61,8 @@ export function useRoom(room: string | null) {
       ws.onmessage = (ev) => {
         const op = JSON.parse(ev.data) as ServerOp;
         if (op.op === "message") merge([op.message]);
+        else if (op.op === "welcome") setOnDuty(op.onDuty ?? true);
+        else if (op.op === "room") setOnDuty(op.onDuty);
         else if (op.op === "participants") setParticipants(op.participants);
         else if (op.op === "result" || op.op === "error") {
           const p = op.reqId ? pending.current.get(op.reqId) : undefined;
@@ -83,21 +86,24 @@ export function useRoom(room: string | null) {
     };
   }, [room]);
 
-  /** Gửi tin dưới tên "user" */
-  const send = useCallback((m: OutgoingMessage) => {
+  const request = useCallback(<T,>(op: Record<string, unknown>) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error("Chưa kết nối hub"));
     const reqId = `w${++seq.current}`;
-    return new Promise<ChatMessage>((resolve, reject) => {
-      pending.current.set(reqId, { resolve, reject });
-      ws.send(JSON.stringify({ op: "send", reqId, ...m }));
+    return new Promise<T>((resolve, reject) => {
+      pending.current.set(reqId, { resolve: resolve as (m: ChatMessage) => void, reject });
+      ws.send(JSON.stringify({ ...op, reqId }));
       setTimeout(() => {
         if (pending.current.delete(reqId)) reject(new Error("Hub không phản hồi"));
       }, 10_000);
     });
   }, []);
 
-  return { messages, participants, conn, send };
+  /** Gửi tin dưới tên "user" */
+  const send = useCallback((m: OutgoingMessage) => request<ChatMessage>({ op: "send", ...m }), [request]);
+  const setDuty = useCallback((v: boolean) => request<boolean>({ op: "duty", onDuty: v }), [request]);
+
+  return { messages, participants, conn, send, onDuty, setDuty };
 }
 
 export function useRooms(intervalMs = 5000) {

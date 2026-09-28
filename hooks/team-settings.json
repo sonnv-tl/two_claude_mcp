@@ -1,0 +1,96 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__team-hub",
+      "mcp__browser",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(grep:*)",
+      "mcp__playwright",
+      "mcp__figma-console__figma_get_status",
+      "mcp__figma-console__figma_list_open_files",
+      "mcp__figma-console__figma_navigate",
+      "mcp__figma-console__figma_get_file_data",
+      "mcp__figma-console__figma_get_file_for_plugin",
+      "mcp__figma-console__figma_get_component",
+      "mcp__figma-console__figma_get_component_for_development",
+      "mcp__figma-console__figma_get_component_for_development_deep",
+      "mcp__figma-console__figma_get_component_image",
+      "mcp__figma-console__figma_capture_screenshot",
+      "mcp__figma-console__figma_take_screenshot",
+      "mcp__figma-console__figma_get_variables",
+      "mcp__figma-console__figma_get_styles",
+      "mcp__figma-console__figma_get_text_styles",
+      "mcp__figma-console__figma_get_design_system_kit",
+      "mcp__figma-console__figma_get_selection",
+      "mcp__figma-console__figma_get_annotations"
+    ],
+    "deny": [
+      "mcp__claude_ai_Figma"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/laragon/www/two_claude_mcp/scripts/hook.mjs stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/laragon/www/two_claude_mcp/scripts/hook.mjs notify",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/laragon/www/two_claude_mcp/scripts/hook.mjs clear",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/laragon/www/two_claude_mcp/scripts/hook.mjs clear",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/laragon/www/two_claude_mcp/scripts/hook.mjs session",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

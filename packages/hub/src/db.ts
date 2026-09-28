@@ -51,6 +51,34 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS idx_messages_room ON messages (room, id);
     `);
+    // Migration: DB tạo từ bản cũ chưa có cột on_duty
+    const cols = this.db.prepare("PRAGMA table_info(rooms)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "on_duty")) {
+      this.db.exec("ALTER TABLE rooms ADD COLUMN on_duty INTEGER NOT NULL DEFAULT 1");
+    }
+    this.db.exec("CREATE TABLE IF NOT EXISTS room_meta (room TEXT PRIMARY KEY, json TEXT NOT NULL)");
+  }
+
+  getMeta(room: string): Record<string, unknown> | null {
+    const r = this.db.prepare("SELECT json FROM room_meta WHERE room = ?").get(room) as { json: string } | undefined;
+    return r ? (JSON.parse(r.json) as Record<string, unknown>) : null;
+  }
+
+  setMeta(room: string, meta: Record<string, unknown>): void {
+    this.ensureRoom(room);
+    this.db
+      .prepare("INSERT INTO room_meta (room, json) VALUES (?, ?) ON CONFLICT (room) DO UPDATE SET json = excluded.json")
+      .run(room, JSON.stringify(meta));
+  }
+
+  isOnDuty(room: string): boolean {
+    const r = this.db.prepare("SELECT on_duty FROM rooms WHERE name = ?").get(room) as { on_duty: number } | undefined;
+    return r ? Number(r.on_duty) === 1 : true;
+  }
+
+  setOnDuty(room: string, onDuty: boolean): void {
+    this.ensureRoom(room);
+    this.db.prepare("UPDATE rooms SET on_duty = ? WHERE name = ?").run(onDuty ? 1 : 0, room);
   }
 
   ensureRoom(room: string): void {
@@ -66,16 +94,17 @@ export class Store {
   listRooms(): RoomInfo[] {
     const rows = this.db
       .prepare(
-        `SELECT r.name, r.created_at, COUNT(m.id) AS cnt, MAX(m.created_at) AS last_at
+        `SELECT r.name, r.created_at, r.on_duty, COUNT(m.id) AS cnt, MAX(m.created_at) AS last_at
          FROM rooms r LEFT JOIN messages m ON m.room = r.name
          GROUP BY r.name ORDER BY COALESCE(MAX(m.created_at), r.created_at) DESC`,
       )
-      .all() as { name: string; created_at: string; cnt: number; last_at: string | null }[];
+      .all() as { name: string; created_at: string; on_duty: number; cnt: number; last_at: string | null }[];
     return rows.map((r) => ({
       name: r.name,
       createdAt: r.created_at,
       messageCount: Number(r.cnt),
       lastMessageAt: r.last_at,
+      onDuty: Number(r.on_duty) === 1,
     }));
   }
 

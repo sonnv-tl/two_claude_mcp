@@ -35,6 +35,10 @@ export interface Participant {
   online: boolean;
   status: string | null;
   lastSeen: string;
+  /** Agent đang đứng chờ trong wait_for_messages (chế độ trực) */
+  waiting: boolean;
+  /** Cần user chú ý ở terminal (vd. chờ duyệt quyền), do hook Claude Code báo lên */
+  attention: string | null;
 }
 
 export interface RoomInfo {
@@ -42,6 +46,7 @@ export interface RoomInfo {
   createdAt: string;
   messageCount: number;
   lastMessageAt: string | null;
+  onDuty: boolean;
 }
 
 // ---------- client -> hub ----------
@@ -58,12 +63,17 @@ export type ClientOp =
   | { op: "participants"; reqId?: string }
   | { op: "status"; reqId?: string; text: string | null }
   /** Đánh dấu đã đọc tới id này (dùng cho agent để tính unread khi reconnect) */
-  | { op: "ack"; upToId: number };
+  | { op: "ack"; upToId: number }
+  /** Bridge báo đang / thôi chờ trong wait_for_messages */
+  | { op: "waiting"; waiting: boolean }
+  /** Web: bật / tắt chế độ trực của phòng (tắt = cho agent kết thúc lượt) */
+  | { op: "duty"; reqId?: string; onDuty: boolean };
 
 // ---------- hub -> client ----------
 
 export type ServerOp =
-  | { op: "welcome"; reqId?: string; room: string; self: Participant | null; unread: ChatMessage[] }
+  | { op: "welcome"; reqId?: string; room: string; self: Participant | null; unread: ChatMessage[]; onDuty: boolean }
+  | { op: "room"; room: string; onDuty: boolean }
   | { op: "message"; message: ChatMessage }
   | { op: "participants"; room: string; participants: Participant[] }
   | { op: "result"; reqId: string; data: unknown }
@@ -76,4 +86,64 @@ export type ServerOp =
  */
 export function isAddressedTo(msg: ChatMessage, name: string): boolean {
   return msg.type !== "system" && msg.from !== name && (msg.to === BROADCAST || msg.to === name);
+}
+
+/** Body của POST /api/hook, gửi từ scripts/hook.mjs (Claude Code hooks) */
+export interface HookRequest {
+  event: "stop" | "notify" | "clear";
+  room: string;
+  name: string;
+  input?: { notification_type?: string; message?: string; stop_hook_active?: boolean };
+}
+export interface HookResponse {
+  block?: boolean;
+  reason?: string;
+}
+
+// ---------- Kickoff ticket ----------
+
+/** Thông tin để soạn tin kickoff. Lưu theo phòng, lấy từ .team-hub.json (tcm start) hoặc form trên web. */
+export interface KickoffMeta {
+  ticket: string;
+  /** Link Figma dùng THAY cho link trong ticket */
+  figma?: string;
+  /** vd. "100000 / Password_1" */
+  testAccount?: string;
+  appRun?: string;
+  appUrl?: string;
+  planDir?: string;
+  testcaseDir?: string;
+  runsDir?: string;
+  /** Ghi chú thêm (phạm vi, lưu ý…) */
+  notes?: string;
+}
+
+export const KICKOFF_DEFAULTS = { planDir: "docs/plan", testcaseDir: "qa/testcases", runsDir: "qa/runs" } as const;
+
+export function buildKickoff(meta: KickoffMeta): string {
+  const t = meta.ticket.trim();
+  const plan = `${(meta.planDir || KICKOFF_DEFAULTS.planDir).replace(/\/$/, "")}/${t}.md`;
+  const tc = `${(meta.testcaseDir || KICKOFF_DEFAULTS.testcaseDir).replace(/\/$/, "")}/${t}.md`;
+  const runs = `${(meta.runsDir || KICKOFF_DEFAULTS.runsDir).replace(/\/$/, "")}/${t}.md`;
+  const info: string[] = [];
+  if (meta.figma?.trim())
+    info.push(`- Figma: ${meta.figma.trim()} (dùng link này thay cho link trong ticket, xem bằng figma-console)`);
+  if (meta.testAccount?.trim()) info.push(`- Tài khoản test: ${meta.testAccount.trim()} (không ghi mật khẩu vào file)`);
+  if (meta.appRun?.trim() || meta.appUrl?.trim())
+    info.push(`- App: ${[meta.appRun?.trim() && `\`${meta.appRun.trim()}\``, meta.appUrl?.trim()].filter(Boolean).join(" → ")}`);
+  return [
+    `🎫 **Kickoff ticket ${t}**`,
+    "",
+    `Đọc ticket **${t}** trên Backlog (mô tả, AC, comment, file đính kèm) và chạy quy trình B1 → B7.`,
+    ...info,
+    "",
+    `- **@dev**: B1 tự xem design + viết plan \`${plan}\` → B2 review test case của QA → B3 implement + unit test → B4 chạy app, handoff URL cho QA → B5–B6 fix hoặc phản biện bug.`,
+    `- **@qa**: B1 tự xem design + viết test case \`${tc}\` → B2 review plan của DEV → B3 soát code, báo lệch AC sớm → B5–B6 test trên browser (so UI với design trên Figma), ghi kết quả \`${runs}\`, báo bug, retest.`,
+    "- **B7**: QA soạn nháp tổng kết, DEV bổ sung phần kỹ thuật, rồi gửi tôi **1 báo cáo chung**.",
+    "",
+    "Luật: mỗi vấn đề tranh luận tối đa 2 lượt mỗi bên, sau đó hỏi tôi phân xử. Mọi lý lẽ phải trích AC. Không sửa ticket trên Backlog.",
+    ...(meta.notes?.trim() ? ["", `Ghi chú: ${meta.notes.trim()}`] : []),
+    "",
+    "Trước khi bắt đầu, mỗi người trả lời tôi 1 tin ngắn: bạn hiểu ticket thế nào, AC nào còn mơ hồ.",
+  ].join("\n");
 }

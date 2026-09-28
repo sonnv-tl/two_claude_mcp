@@ -26,6 +26,8 @@ export class HubClient extends EventEmitter {
   connected = false;
   lastError: string | null = null;
   participants: Participant[] = [];
+  /** Phòng đang bật chế độ trực (user có thể tắt trên web) */
+  onDuty = true;
 
   constructor(readonly opts: HubClientOptions) {
     super();
@@ -88,10 +90,16 @@ export class HubClient extends EventEmitter {
         this.lastError = null;
         log(`đã kết nối hub, phòng "${op.room}" với tên "${this.opts.name}" (${op.unread.length} tin chưa đọc)`);
         this.emit("connected");
+        this.onDuty = op.onDuty ?? true;
         this.emit("welcome", op.unread);
+        this.emit("room", this.onDuty);
         break;
       case "message":
         this.emit("message", op.message);
+        break;
+      case "room":
+        this.onDuty = op.onDuty;
+        this.emit("room", op.onDuty);
         break;
       case "participants":
         this.participants = op.participants;
@@ -150,6 +158,10 @@ export class HubClient extends EventEmitter {
       this.pending.set(reqId, { resolve: resolve as (v: unknown) => void, reject, timer });
       this.raw({ ...op, reqId } as ClientOp);
     });
+  }
+
+  setWaiting(waiting: boolean) {
+    this.raw({ op: "waiting", waiting });
   }
 
   ack(upToId: number) {

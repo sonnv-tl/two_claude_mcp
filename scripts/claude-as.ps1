@@ -6,6 +6,9 @@
 #   -Channel   : đẩy tin realtime qua Claude Code channels (org phải bật channelsEnabled).
 #                Mặc định: long-poll — agent "trực" trong wait_for_messages.
 #   -NoBrowser : QA không nạp Playwright MCP (khi đã có tool browser khác)
+#   -NoHooks   : không nạp hooks/team-settings.json (Stop hook giữ trực, báo "chờ duyệt quyền" lên web)
+#   -Model sonnet / -PermissionMode acceptEdits / -Extra @("--foo","bar")
+#   -SkipPermissions : chạy với --dangerously-skip-permissions (không hỏi duyệt quyền)
 param(
   [Parameter(Mandatory = $true)][string]$Role,
   [string]$Name = $Role,
@@ -13,7 +16,12 @@ param(
   [string]$HubUrl = "ws://127.0.0.1:4747/ws",
   [string]$Prompt = "",
   [switch]$Channel,
-  [switch]$NoBrowser
+  [switch]$NoBrowser,
+  [switch]$NoHooks,
+  [switch]$SkipPermissions,
+  [string]$Model = "",
+  [string]$PermissionMode = "",
+  [string[]]$Extra = @()
 )
 
 $env:AGENT_ROLE = $Role
@@ -24,6 +32,10 @@ $env:HUB_URL = $HubUrl
 if (-not $env:MCP_TOOL_TIMEOUT) { $env:MCP_TOOL_TIMEOUT = "900000" }
 
 $claudeArgs = @()
+if (-not $NoHooks) { $claudeArgs += @("--settings", (Join-Path $PSScriptRoot "..\hooks\team-settings.json")) }
+if ($Model) { $claudeArgs += @("--model", $Model) }
+if ($PermissionMode) { $claudeArgs += @("--permission-mode", $PermissionMode) }
+if ($SkipPermissions) { $claudeArgs += "--dangerously-skip-permissions" }
 if ($Channel) {
   $env:HUB_CHANNEL = "1"
   $claudeArgs += @("--dangerously-load-development-channels", "server:team-hub")
@@ -39,6 +51,7 @@ if ($Role -eq "qa" -and -not $NoBrowser) {
   $claudeArgs += @("--mcp-config", (Join-Path $PSScriptRoot "..\examples\qa-browser.mcp.json"))
 }
 if (-not $Prompt) { $Prompt = $defaultPrompt }
+$claudeArgs += $Extra
 
 # Prompt phải đứng TRƯỚC: các cờ channel / --mcp-config nhận nhiều giá trị, sẽ nuốt mất prompt nếu đặt sau
 claude $Prompt @claudeArgs

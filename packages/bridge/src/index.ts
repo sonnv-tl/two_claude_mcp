@@ -13,6 +13,15 @@ import {
 import { HubClient, log } from "./hubClient.js";
 import { buildInstructions } from "./personas.js";
 
+// Không có HUB_ROOM = session thường (không mở qua claude-as): không vào phòng nào, không expose tool,
+// để team-hub cài ở scope user không "kéo" mọi session vào hub.
+if (!process.env.HUB_ROOM?.trim()) {
+  const idle = new McpServer({ name: "team-hub", version: "0.3.0" });
+  await idle.connect(new StdioServerTransport());
+  log("HUB_ROOM chưa đặt: bridge ở chế độ nghỉ (không kết nối hub). Mở session bằng scripts/claude-as để tham gia phòng.");
+  await new Promise(() => {});
+}
+
 const role = process.env.AGENT_ROLE?.trim() || "agent";
 const name = process.env.AGENT_NAME?.trim() || role;
 const room = process.env.HUB_ROOM?.trim() || "default";
@@ -36,9 +45,7 @@ let mcpReady = false;
 
 function enqueue(msg: ChatMessage) {
   inbox.push(msg);
-  const w = waiters;
-  waiters = [];
-  w.forEach((fn) => fn());
+  wakeWaiters();
 }
 
 function onIncoming(msg: ChatMessage, allowPush: boolean) {
@@ -62,8 +69,21 @@ async function push(msg: ChatMessage) {
 }
 
 // Tin chưa đọc lúc (re)connect: để trong inbox — session có thể chưa sẵn sàng nhận channel event.
-hub.on("welcome", (unread: ChatMessage[]) => unread.forEach((m) => onIncoming(m, false)));
+hub.on("welcome", (unread: ChatMessage[]) => {
+  unread.forEach((m) => onIncoming(m, false));
+  if (waiters.length) hub.setWaiting(true); // reconnect giữa lúc đang chờ
+});
 hub.on("message", (msg: ChatMessage) => onIncoming(msg, true));
+// User tắt chế độ trực → đánh thức mọi wait_for_messages đang chờ để agent kết thúc lượt
+hub.on("room", (onDuty: boolean) => {
+  if (!onDuty) wakeWaiters();
+});
+
+function wakeWaiters() {
+  const w = waiters;
+  waiters = [];
+  w.forEach((fn) => fn());
+}
 
 /** Lấy hết tin trong inbox ra, ack lên hub */
 function drain(): ChatMessage[] {
@@ -193,9 +213,18 @@ server.registerTool(
         return result(`Chưa kết nối được hub (${url}). ${hub.lastError ?? ""}`.trim(), { isError: true });
       }
       const secs = timeout_seconds ?? 300;
-      await hub.setStatus("đang chờ tin nhắn…").catch(() => {});
-      await waitForInbox(secs * 1000, extra.signal);
-      await hub.setStatus(null).catch(() => {});
+      const offDuty = () =>
+        result(
+          "User đã TẮT chế độ trực trên web. Hãy hoàn tất việc đang làm dở (nếu có), gửi user tóm tắt ngắn nếu cần, rồi KẾT THÚC LƯỢT (không gọi wait_for_messages nữa).",
+        );
+      if (!hub.onDuty && !inbox.length) return offDuty();
+      hub.setWaiting(true);
+      try {
+        await waitForInbox(secs * 1000, extra.signal);
+      } finally {
+        hub.setWaiting(false);
+      }
+      if (!inbox.length && !hub.onDuty) return offDuty();
       if (!inbox.length) {
         return result(
           channelMode

@@ -1,5 +1,21 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { format } from "node:util";
+
+// `--log <file>`: ghi log (UTF-8) ra file, dùng khi chạy nền (scripts/hub-service.ps1)
+const logArg = process.argv.indexOf("--log");
+if (logArg > 0 && process.argv[logArg + 1]) {
+  const logFile = process.argv[logArg + 1];
+  mkdirSync(dirname(logFile), { recursive: true });
+  const write = (level: string, args: unknown[]) =>
+    appendFileSync(logFile, `${new Date().toISOString()} ${level} ${format(...args)}\n`);
+  console.log = (...a: unknown[]) => write("INFO ", a);
+  console.error = (...a: unknown[]) => write("ERROR", a);
+  process.on("uncaughtException", (e) => {
+    write("FATAL", [e]);
+    process.exit(1);
+  });
+}
 import { extname, join, normalize, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
@@ -7,9 +23,13 @@ import {
   BROADCAST,
   DEFAULT_HUB_PORT,
   MESSAGE_TYPES,
+  buildKickoff,
   isAddressedTo,
+  type KickoffMeta,
   type ChatMessage,
   type ClientOp,
+  type HookRequest,
+  type HookResponse,
   type Participant,
   type ParticipantKind,
   type ServerOp,
@@ -53,8 +73,34 @@ function send(conn: Conn, op: ServerOp) {
   if (conn.ws.readyState === WebSocket.OPEN) conn.ws.send(JSON.stringify(op));
 }
 
+// ---------- trạng thái runtime (không lưu DB) ----------
+
+interface Runtime {
+  waiting: boolean;
+  lastWaitAt: number;
+  /** Lần gần nhất Stop hook chặn agent kết thúc lượt */
+  lastBlockAt: number;
+  attention: string | null;
+}
+const runtimes = new Map<string, Runtime>();
+function rt(room: string, name: string): Runtime {
+  const k = `${room}/${name}`;
+  let r = runtimes.get(k);
+  if (!r) runtimes.set(k, (r = { waiting: false, lastWaitAt: 0, lastBlockAt: 0, attention: null }));
+  return r;
+}
+function setAttention(room: string, name: string, text: string | null) {
+  const r = rt(room, name);
+  if (r.attention === text) return;
+  r.attention = text;
+  broadcastParticipants(room);
+}
+
 function toParticipant(room: string, p: ParticipantRow): Participant {
+  const r = rt(room, p.name);
   return {
+    waiting: r.waiting,
+    attention: r.attention,
     name: p.name,
     role: p.role,
     kind: p.kind,
@@ -104,7 +150,7 @@ function handle(conn: Conn, op: ClientOp) {
     if (op.kind === "viewer") {
       Object.assign(conn, { kind: "viewer", room });
       roomViewers(room).add(conn);
-      send(conn, { op: "welcome", reqId, room, self: null, unread: [] });
+      send(conn, { op: "welcome", reqId, room, self: null, unread: [], onDuty: store.isOnDuty(room) });
       broadcastParticipants(room); // "user" chuyển sang online
       return;
     }
@@ -125,7 +171,8 @@ function handle(conn: Conn, op: ClientOp) {
     Object.assign(conn, { kind: op.kind, room, name });
     roomOnline(room).set(name, conn);
     const unread = store.unreadFor(room, name, row.lastReadId);
-    send(conn, { op: "welcome", reqId, room, self: toParticipant(room, row), unread });
+    Object.assign(rt(room, name), { waiting: false, attention: null, lastBlockAt: 0 });
+    send(conn, { op: "welcome", reqId, room, self: toParticipant(room, row), unread, onDuty: store.isOnDuty(room) });
     broadcastParticipants(room);
     if (!existing) systemMessage(room, `${name} (${op.role || op.kind}) đã tham gia phòng`);
     return;
@@ -141,10 +188,11 @@ function handle(conn: Conn, op: ClientOp) {
   }
 
   // Web (viewer) chỉ được gửi tin, dưới tên "user"
-  if (conn.kind === "viewer" && op.op !== "send") return fail("Viewer chỉ được xem và gửi tin");
+  if (conn.kind === "viewer" && op.op !== "send" && op.op !== "duty") return fail("Viewer chỉ được xem, gửi tin và bật/tắt trực");
   const room = conn.room;
   const name = conn.kind === "viewer" ? HUMAN_NAME : conn.name;
   store.touch(room, name);
+  if (conn.kind !== "viewer" && op.op !== "waiting" && rt(room, name).attention) setAttention(room, name, null);
 
   switch (op.op) {
     case "send": {
@@ -173,6 +221,21 @@ function handle(conn: Conn, op: ClientOp) {
       store.ack(room, name, op.upToId);
       return;
     }
+    case "waiting": {
+      const r = rt(room, name);
+      r.waiting = !!op.waiting;
+      if (r.waiting) {
+        r.lastWaitAt = Date.now();
+        r.attention = null; // đã quay lại trực → không còn kẹt ở terminal
+      }
+      broadcastParticipants(room);
+      return;
+    }
+    case "duty": {
+      if (conn.kind !== "viewer") return fail("Chỉ user (web) được bật/tắt chế độ trực");
+      setDuty(room, !!op.onDuty);
+      return reply(true);
+    }
     default:
       return fail(`op không hỗ trợ: ${(op as { op: string }).op}`);
   }
@@ -189,10 +252,115 @@ function onClose(conn: Conn) {
   // Chỉ xoá nếu socket này vẫn là socket hiện hành (không bị thay thế)
   if (map.get(conn.name) === conn) {
     map.delete(conn.name);
+    Object.assign(rt(conn.room, conn.name), { waiting: false, attention: null });
     store.touch(conn.room, conn.name);
     broadcastParticipants(conn.room);
     systemMessage(conn.room, `${conn.name} đã offline`);
   }
+}
+
+function setDuty(room: string, onDuty: boolean) {
+  if (store.isOnDuty(room) === onDuty) return;
+  store.setOnDuty(room, onDuty);
+  broadcastRoom(room);
+  systemMessage(
+    room,
+    onDuty
+      ? "user đã BẬT chế độ trực: agent sẽ ở lại chờ việc sau mỗi lượt"
+      : "user đã TẮT chế độ trực: agent sẽ kết thúc lượt khi xong việc hiện tại",
+  );
+}
+
+/** Lưu thông tin kickoff của phòng; send=true thì gửi tin kickoff tới @all dưới tên user */
+function kickoff(room: string, meta: KickoffMeta, sendNow: boolean): ChatMessage | null {
+  if (!meta?.ticket?.trim()) throw new Error("Thiếu mã ticket");
+  const clean: Record<string, string> = {};
+  for (const [k, v] of Object.entries(meta)) if (typeof v === "string" && v.trim()) clean[k] = v.trim();
+  store.setMeta(room, clean);
+  if (!sendNow) return null;
+  if (!store.isOnDuty(room)) setDuty(room, true);
+  const msg = store.addMessage({
+    room,
+    from: HUMAN_NAME,
+    to: BROADCAST,
+    type: "handoff",
+    content: buildKickoff(clean as unknown as KickoffMeta),
+    replyTo: null,
+  });
+  deliver(msg);
+  return msg;
+}
+
+function broadcastRoom(room: string) {
+  const op: ServerOp = { op: "room", room, onDuty: store.isOnDuty(room) };
+  for (const c of roomOnline(room).values()) send(c, op);
+  for (const c of roomViewers(room)) send(c, op);
+}
+
+// ---------- Claude Code hooks (scripts/hook.mjs) ----------
+
+/** Agent kết thúc lượt liên tiếp trong khoảng này mà không quay lại chờ → thả, tránh vòng lặp đốt token */
+const STOP_LOOP_WINDOW_MS = 60_000;
+
+function handleHook(h: HookRequest): HookResponse {
+  const { room, name } = h;
+  if (!room || !name || !store.getParticipant(room, name)) return {};
+  const r = rt(room, name);
+
+  if (h.event === "clear") {
+    if (r.attention) setAttention(room, name, null);
+    return {};
+  }
+
+  if (h.event === "notify") {
+    const t = h.input?.notification_type;
+    if (t === "permission_prompt") setAttention(room, name, "⚠️ Đang chờ bạn duyệt quyền trong terminal");
+    else if (t === "idle_prompt") setAttention(room, name, "💤 Đang rảnh ở terminal (không trực)");
+    else if (t === "elicitation_dialog" || t === "agent_needs_input")
+      setAttention(room, name, "⚠️ Đang chờ bạn trả lời trong terminal");
+    return {};
+  }
+
+  // event === "stop"
+  if (r.attention) setAttention(room, name, null);
+  if (!store.isOnDuty(room)) return {};
+  if (!roomOnline(room).has(name)) return {}; // bridge không kết nối → đừng giữ agent lại
+  const now = Date.now();
+  if (r.lastBlockAt && now - r.lastBlockAt < STOP_LOOP_WINDOW_MS && r.lastWaitAt < r.lastBlockAt) {
+    // Vừa bị chặn mà không chịu gọi wait_for_messages → thả ra
+    r.lastBlockAt = 0;
+    setAttention(room, name, "💤 Đã rời chế độ trực. Gõ vào terminal để gọi lại");
+    systemMessage(room, `${name} đã rời chế độ trực (kết thúc lượt liên tục)`);
+    return {};
+  }
+  r.lastBlockAt = now;
+  return {
+    block: true,
+    reason:
+      `[team-hub] Phòng "${room}" đang ở CHẾ ĐỘ TRỰC: đừng kết thúc lượt. ` +
+      "Gọi tool wait_for_messages để chờ tin tiếp theo (hết timeout thì gọi lại). " +
+      "Nếu cần hỏi user điều gì, gửi send_message tới \"user\" rồi wait_for_messages để chờ trả lời. " +
+      "Chỉ dừng khi user tắt chế độ trực trên web.",
+  };
+}
+
+function readJson(req: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (c) => {
+      body += c;
+      if (body.length > 1_000_000) req.destroy();
+    });
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on("error", reject);
+  });
 }
 
 // ---------- HTTP: REST + web tĩnh ----------
@@ -232,7 +400,34 @@ const server = createServer((req, res) => {
   const p = url.pathname;
 
   if (p === "/api/health") return json(res, 200, { ok: true });
+  if (p === "/api/hook" && req.method === "POST") {
+    readJson(req)
+      .then((body) => json(res, 200, handleHook(body as HookRequest)))
+      .catch((e) => json(res, 400, { error: String(e) }));
+    return;
+  }
   if (p === "/api/rooms") return json(res, 200, store.listRooms());
+
+  const k = p.match(/^\/api\/rooms\/([^/]+)\/(meta|kickoff|duty)$/);
+  if (k) {
+    const room = decodeURIComponent(k[1]);
+    if (!NAME_RE.test(room)) return json(res, 400, { error: `Tên phòng không hợp lệ: ${room}` });
+    if (k[2] === "meta" && req.method === "GET") return json(res, 200, store.getMeta(room) ?? {});
+    if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+    readJson(req)
+      .then((body) => {
+        const b = body as Record<string, unknown>;
+        if (k[2] === "duty") {
+          store.ensureRoom(room);
+          setDuty(room, !!b.onDuty);
+          return json(res, 200, { onDuty: store.isOnDuty(room) });
+        }
+        const msg = kickoff(room, (b.meta ?? b) as KickoffMeta, k[2] === "kickoff" && b.send !== false);
+        return json(res, 200, { ok: true, message: msg });
+      })
+      .catch((e) => json(res, 400, { error: e instanceof Error ? e.message : String(e) }));
+    return;
+  }
 
   const m = p.match(/^\/api\/rooms\/([^/]+)\/(messages|participants)$/);
   if (m) {
@@ -286,6 +481,14 @@ const heartbeat = setInterval(() => {
   }
 }, 30_000);
 wss.on("close", () => clearInterval(heartbeat));
+
+server.on("error", (e: NodeJS.ErrnoException) => {
+  if (e.code === "EADDRINUSE") {
+    console.error(`[hub] port ${PORT} đang được dùng: có thể hub đã chạy sẵn (http://${HOST}:${PORT}).`);
+    process.exit(0);
+  }
+  throw e;
+});
 
 server.listen(PORT, HOST, () => {
   console.log(`[hub] http://${HOST}:${PORT}  (ws: ws://${HOST}:${PORT}/ws)`);

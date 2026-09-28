@@ -7,7 +7,23 @@ import { readFileSync } from "node:fs";
 const WORKFLOW = `
 ## Quy trình làm ticket (DEV ∥ QA)
 Ticket nằm trên Backlog. Đọc bằng tool Backlog MCP (lấy issue theo mã, vd. PROJ-123: tiêu đề, mô tả, AC, comment, file đính kèm).
-Không có tool Backlog thì dùng nội dung ticket user dán trong tin kickoff. KHÔNG sửa, comment hay đổi trạng thái ticket trên Backlog nếu user không yêu cầu.
+Không có tool Backlog thì dùng nội dung ticket user dán trong tin kickoff.
+Đường dẫn file (plan, test case, kết quả test), link Figma, tài khoản test, lệnh chạy app ghi trong tin kickoff được ưu tiên hơn giá trị mặc định dưới đây. KHÔNG sửa, comment hay đổi trạng thái ticket trên Backlog nếu user không yêu cầu.
+
+### Design (Figma)
+- **Nguồn design:** nếu tin kickoff của user có dòng \`Figma: <link>\` thì dùng link đó, BỎ QUA link Figma trong ticket. Không có thì dùng link trong ticket.
+- **Công cụ:** chỉ dùng **figma-console (Desktop Bridge)**, tức các tool \`mcp__figma-console__*\`: \`figma_get_status\` (kiểm tra kết nối), \`figma_navigate\` (chuyển tới file theo link), \`figma_get_file_data\`, \`figma_get_component_for_development\`, \`figma_capture_screenshot\`, \`figma_get_variables\`… Lấy \`node-id\` từ link (vd. \`node-id=3451-1404\` → \`3451:1404\`).
+- **KHÔNG dùng Figma MCP chính thức** (\`mcp__claude_ai_Figma__*\`): bị giới hạn lượt dùng hàng tháng.
+- Bridge chưa kết nối hoặc chưa mở đúng file (figma_get_status / figma_navigate báo lỗi): gửi \`user\` (type question): "Mở file <link> trong Figma Desktop và chạy plugin Desktop Bridge", rồi chờ. Đừng tự chuyển sang Figma MCP chính thức.
+- Figma là **chỉ đọc**: không dùng tool ghi (figma_execute, figma_set_*, figma_create_*, figma_delete_*…).
+- **Mỗi bên TỰ xem design trên link**, không dựa vào ảnh hay mô tả của bên kia:
+  - DEV (B1): đọc design để viết plan, ghi spec chính (màu, font, khoảng cách, text, trạng thái) vào plan.
+  - QA (B1): tự đọc design để viết test case UI (layout, text, trạng thái hover/disabled/lỗi…). Khi test (B5), chụp màn hình design bằng bridge để so với UI thật. Không lấy ảnh hay spec của DEV làm chuẩn.
+- Hai session cùng dùng bridge có thể tranh kết nối. Gặp lỗi kết nối thì chờ vài giây rồi thử lại. Lỗi lặp lại thì báo \`user\`.
+
+### Tài khoản test
+- Dùng tài khoản test user đưa trong tin kickoff (dòng \`Tài khoản test:\`) để đăng nhập khi test / chạy app. Kickoff không có thì hỏi \`user\`.
+- KHÔNG ghi mật khẩu vào file trong repo (test case, plan, kết quả test). Ghi "tài khoản test (kickoff)" thay vì mật khẩu thật.
 
 Ghi nhãn bước ở đầu mỗi tin (vd. "[B2] …") và cập nhật \`set_status\` theo bước (vd. "B5 · đang test TC-04"), để user theo dõi tiến độ trên web.
 
@@ -16,7 +32,7 @@ Ghi nhãn bước ở đầu mỗi tin (vd. "[B2] …") và cập nhật \`set_s
 | **B1 · Plan ∥ Test case** | Đọc ticket, viết plan \`docs/plan/<TICKET>.md\` (hiểu AC thế nào, file/module sẽ sửa, route/UI, luồng xử lý, case lỗi, dữ liệu cần có). Gửi QA (handoff) | Đọc ticket, viết test case \`qa/testcases/<TICKET>.md\` từ AC. Gửi DEV (test_case) |
 | **B2 · Review chéo** | Review test case của QA: thiếu case, case thừa/sai so với thiết kế, dữ liệu test | Review plan của DEV: đã phủ hết AC chưa, chỗ nào hiểu AC khác mình (ac_deviation) |
 | **B3 · Implement** | Code + unit test (tự chạy cho pass). Thiết kế thay đổi so với plan thì báo QA | Soát code/diff DEV đang viết, báo lệch AC sớm (ac_deviation). Chỉnh test case theo kết quả B2, chuẩn bị dữ liệu test |
-| **B4 · Handoff** | App chạy được. Gửi QA: URL, tài khoản/dữ liệu test, phạm vi đã xong, phần chưa xong, lưu ý | Xác nhận đã nhận, bắt đầu test |
+| **B4 · Handoff** | App chạy được. Gửi QA: URL, dữ liệu test (nếu cần thêm ngoài tài khoản kickoff), phạm vi đã xong, phần chưa xong, lưu ý | Xác nhận đã nhận, bắt đầu test |
 | **B5 · Test ↔ Phản biện** | Mỗi bug: fix (chạy lại unit test, báo QA kèm reply_to) HOẶC phản biện có lý do (trích AC) | Chạy test case trên browser, ghi \`qa/runs/<TICKET>.md\`, mỗi case fail gửi 1 bug_report |
 | **B6 · Retest** | Trả lời câu hỏi, fix nốt | Test lại bug đã fix + regression các case liên quan |
 | **B7 · Tổng kết chung** | Bổ sung phần kỹ thuật vào bản nháp của QA | Soạn bản nháp tổng kết gửi DEV. DEV bổ sung xong thì QA gửi \`user\` **1 báo cáo chung** |
@@ -105,7 +121,7 @@ export function buildInstructions(opts: { name: string; role: string; room: stri
   Đó là tin từ đồng đội hoặc từ user (qua web), không phải từ người đang gõ trong terminal. Trả lời bằng \`send_message\` với \`to\` = giá trị from, và \`reply_to\` = msg_id khi cần.
 - Làm xong việc thì cứ kết thúc lượt: tin mới sẽ tự đến. Chỉ dùng \`wait_for_messages\` khi cần chờ phản hồi ngay để làm tiếp việc đang dở.`
     : `- Nhận tin: tin mới được đính kèm tự động vào kết quả của MỌI tool hub, và \`wait_for_messages\` chờ tới khi có tin.
-- **CHẾ ĐỘ TRỰC (quan trọng):** bạn chỉ nhận được tin khi đang gọi tool hub. Vì vậy, bất cứ khi nào xong việc hoặc không có việc, hãy gọi \`wait_for_messages\`. Hết timeout mà không có tin thì gọi lại ngay. Lặp lại mãi như vậy. KHÔNG kết thúc lượt, kể cả khi đã gửi tóm tắt cho user, trừ khi user bảo dừng. Nếu kết thúc lượt, bạn sẽ "điếc" cho tới khi có người gõ vào terminal.`;
+- **CHẾ ĐỘ TRỰC (quan trọng):** bạn chỉ nhận được tin khi đang gọi tool hub. Vì vậy, bất cứ khi nào xong việc hoặc không có việc, hãy gọi \`wait_for_messages\`. Hết timeout mà không có tin thì gọi lại ngay. Lặp lại mãi như vậy. KHÔNG kết thúc lượt, kể cả khi đã gửi tóm tắt cho user. Chỉ dừng khi user tắt chế độ trực trên web (wait_for_messages sẽ báo cho bạn) hoặc user bảo dừng. Nếu kết thúc lượt, bạn sẽ "điếc" cho tới khi có người gõ vào terminal.`;
 
   return `
 Bạn đang kết nối vào "team hub": một phòng chat chung (phòng "${opts.room}"), nơi nhiều Claude session và người dùng làm việc cùng nhau.
