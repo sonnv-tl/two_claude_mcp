@@ -31,7 +31,7 @@ Cài alias một lần (WSL): `echo "alias tcm='bash /mnt/c/laragon/www/two_clau
 ```bash
 cd ~/thankslab-portal
 tcm init                              # một lần mỗi repo: tạo .team-hub.json + .team-hub.local.json, thêm file của tcm/agent vào .git/info/exclude
-tcm start TLPORTAL-10182              # hub → Windows Terminal 2 pane DEV | QA → web → chờ 2 agent online → gửi kickoff
+tcm start TLPORTAL-10182              # hub → cửa sổ Windows Terminal mới chia đôi DEV | QA → web; gửi kickoff ngay (hub giữ tin, DEV/QA nhận khi vào phòng)
 tcm start TLPORTAL-10182 --figma "https://www.figma.com/design/…" --notes "chỉ làm màn list"
 tcm start TLPORTAL-10182 --manual     # không tự gửi, bấm 🎫 Kickoff trên web
 tcm status                            # các phòng, agent đang chờ / đang làm / ⚠
@@ -56,7 +56,7 @@ tcm stop TLPORTAL-10182               # tắt chế độ trực
 - `"skipPermissions"`: mặc định bật. Session chạy với `--dangerously-skip-permissions`, agent chạy lệnh và sửa file **không hỏi duyệt**. Đặt `false` để tắt riêng cho từng agent. Chạy tay thì dùng `SKIP_PERMISSIONS=1` (bash) hoặc `-SkipPermissions` (PowerShell).
 - **Không đụng `.gitignore`:** `tcm init`, `tcm start` và `tcm vscode` ghi vào `.git/info/exclude` (chỉ có trên máy bạn, không bị commit) các mục `.team-hub*.json`, `.vscode/tasks.json`, thư mục plan, test case, kết quả test, `qa/screenshots/`, `.playwright-mcp/`.
 
-**Trong VS Code (2 terminal chia đôi, không cần cửa sổ ngoài):** chạy `tcm vscode` trong repo một lần. Lệnh này thêm task vào `.vscode/tasks.json`. Sau đó dùng `Ctrl+Shift+P` → *Tasks: Run Task* → **tcm: start ticket** → nhập mã ticket. Task mở DEV | QA chia đôi trong panel Terminal và tự gửi kickoff khi 2 agent online. Repo trong WSL thì mở VS Code bằng Remote-WSL (`code .` từ WSL).
+**Trong VS Code (2 terminal chia đôi, không cần cửa sổ ngoài):** chạy `tcm vscode` trong repo một lần (chạy lại sau mỗi lần cập nhật tcm). Lệnh này thêm task vào `.vscode/tasks.json`. Sau đó dùng `Ctrl+Shift+P` → *Tasks: Run Task* → **tcm: start ticket** → nhập mã ticket và link Figma (để trống = dùng link trong `.team-hub.json`, hoặc link trong ticket nếu config không có). Panel Terminal có DEV | QA chia đôi, web mở ở trình duyệt, kickoff được gửi ngay, task kickoff tự đóng terminal của nó. Repo trong WSL thì mở VS Code bằng Remote-WSL (`code .` từ WSL). Gán phím tắt: *Keyboard Shortcuts* → `workbench.action.tasks.runTask` với args `"tcm: start ticket"`.
 
 **Form 🎫 Kickoff trên web:** điền sẵn thông tin `tcm start` đã lưu. Bạn sửa Figma, tài khoản test, ghi chú, xem trước tin rồi gửi cho `@all`.
 

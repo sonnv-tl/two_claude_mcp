@@ -10,7 +10,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const port = 5100 + Math.floor(Math.random() * 90); // tránh 4747 (hub thật)
 const tmp = mkdtempSync(join(tmpdir(), "tcm-"));
 const repo = join(tmp, "repo");
-const env = { ...process.env, HUB_PORT: String(port), HUB_DB: join(tmp, "hub.db"), HUB_LOG: join(tmp, "hub.log") };
+const env = { ...process.env, HUB_PORT: String(port), HUB_DB: join(tmp, "hub.db"), HUB_LOG: join(tmp, "hub.log"), TCM_LOG: join(tmp, "tcm.log") };
 const HUB = `http://127.0.0.1:${port}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -30,7 +30,7 @@ const check = (label, cond, extra = "") => {
   if (!cond) failed++;
 };
 
-async function fakeAgent(name) {
+async function fakeAgent(name, room = "TL-1") {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
   const got = [];
   await new Promise((ok, fail) => ((ws.onopen = ok), (ws.onerror = fail)));
@@ -39,7 +39,7 @@ async function fakeAgent(name) {
     if (op.op === "message") got.push(op.message);
     if (op.op === "welcome") got.push(...op.unread);
   };
-  ws.send(JSON.stringify({ op: "hello", kind: "agent", room: "TL-1", name, role: name }));
+  ws.send(JSON.stringify({ op: "hello", kind: "agent", room, name, role: name }));
   await sleep(200);
   ws.send(JSON.stringify({ op: "waiting", waiting: true }));
   return { ws, got };
@@ -105,6 +105,21 @@ try {
 
   const web = await fetch(`${HUB}/api/rooms/TL-1/kickoff`, { method: "POST", body: JSON.stringify({ meta: { ticket: "" } }) });
   check("API kickoff thiếu ticket → 400", web.status === 400);
+  // Mặc định (không --wait): trả terminal ngay, kickoff gửi ngầm khi agent online
+  const t0 = Date.now();
+  const bg = await tcm("start", "TL-2", "--dry-run", "--no-open");
+  check("start trả về ngay", bg.code === 0 && Date.now() - t0 < 8000 && bg.out.includes("đã gửi kickoff"), bg.out);
+  const dev2 = await fakeAgent("dev", "TL-2");
+  const qa2 = await fakeAgent("qa", "TL-2");
+  let k2;
+  for (let n = 0; n < 40 && !k2; n++) {
+    await sleep(250);
+    k2 = qa2.got.find((m) => m.content.includes("Kickoff ticket TL-2"));
+  }
+  check("agent vào phòng SAU vẫn nhận kickoff (tin chưa đọc)", !!k2 && k2.content.includes("100000 / Password_1"), JSON.stringify(qa2.got));
+  dev2.ws.close();
+  qa2.ws.close();
+
   dev.ws.close();
   qa.ws.close();
 } catch (e) {

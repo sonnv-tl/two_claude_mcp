@@ -41,10 +41,10 @@ switch ($Action) {
     if (-not (Test-Path $HubJs)) { Write-Error "Chưa build: chạy 'npm run build' trong $Root trước."; exit 1 }
     $node = (Get-Command node -ErrorAction Stop).Source
     New-Item -ItemType Directory -Force $DataDir | Out-Null
-    # Ghi log ra data/hub.log; -WindowStyle Hidden để không hiện cửa sổ
-    $cmd = "& '$node' --disable-warning=ExperimentalWarning '$HubJs' --log '$Log'"
-    $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" `
-      -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"$cmd`"" -WorkingDirectory $Root
+    # conhost --headless: node có console nhưng KHÔNG có cửa sổ. (powershell -WindowStyle Hidden không đủ:
+    # khi Windows Terminal là terminal mặc định, console bị hiện thành tab WT, đóng tab là hub chết.)
+    $taskAction = New-ScheduledTaskAction -Execute "conhost.exe" `
+      -Argument "--headless `"$node`" --disable-warning=ExperimentalWarning `"$HubJs`" --log `"$Log`"" -WorkingDirectory $Root
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
     $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
       -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable

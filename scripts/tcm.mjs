@@ -2,7 +2,7 @@
 // tcm: mở một ticket cho cặp DEV/QA bằng một lệnh.
 //   tcm init                      tạo .team-hub.json + .team-hub.local.json, thêm file của tcm/agent vào .git/info/exclude
 //   tcm start <TICKET> [options]  bảo đảm hub chạy → lưu thông tin kickoff → mở Windows Terminal 2 pane (DEV | QA)
-//                                 → mở web → chờ 2 agent online rồi gửi kickoff
+//                                 → mở web → gửi kickoff (agent nhận khi vào phòng)
 //       --room <tên>     tên phòng (mặc định = mã ticket)
 //       --figma <url>    link Figma thay cho link trong ticket (ghi đè .team-hub.json)
 //       --account "<user> / <pass>"   tài khoản test (ghi đè)
@@ -186,30 +186,7 @@ function openTerminals(room, cfg) {
 }
 
 function openWeb(room) {
-  spawn("cmd", ["/c", "start", "", `${HUB}/#/${encodeURIComponent(room)}`], { stdio: "ignore", detached: true }).unref();
-}
-
-async function waitAgents(room, timeoutMs) {
-  const start = Date.now();
-  let onlineAt = 0;
-  let last = "";
-  while (Date.now() - start < timeoutMs) {
-    const ps = await api(`/api/rooms/${encodeURIComponent(room)}/participants`);
-    const dev = ps.find((p) => p.name === "dev");
-    const qa = ps.find((p) => p.name === "qa");
-    const state = `dev: ${dev?.online ? (dev.waiting ? "chờ việc" : "online") : "—"} · qa: ${qa?.online ? (qa.waiting ? "chờ việc" : "online") : "—"}`;
-    if (state !== last) {
-      console.log(`  ${state}`);
-      last = state;
-    }
-    if (dev?.online && qa?.online) {
-      onlineAt ||= Date.now();
-      // cả hai đã vào chế độ chờ, hoặc online đủ lâu (tin kickoff vẫn được giao qua hộp thư)
-      if ((dev.waiting && qa.waiting) || Date.now() - onlineAt > 30_000) return true;
-    }
-    await sleep(1500);
-  }
-  return false;
+  spawn("cmd", ["/c", "start", "", `${HUB}/#/${encodeURIComponent(room)}`], { stdio: "ignore", detached: true, windowsHide: true }).unref();
 }
 
 // ---------- git exclude (cá nhân, không đụng .gitignore) ----------
@@ -247,6 +224,7 @@ function personalEntries(cfg) {
     ".team-hub.json",
     ".team-hub.local.json",
     ".vscode/tasks.json",
+    ".vscode/.tcm-ticket",
     `${(p.plan || "docs/plan").replace(/\/$/, "")}/`,
     `${(p.testcases || "qa/testcases").replace(/\/$/, "")}/`,
     `${(p.runs || "qa/runs").replace(/\/$/, "")}/`,
@@ -306,7 +284,7 @@ async function cmdStart() {
 
   const meta = {
     ticket,
-    figma: typeof opts.figma === "string" ? opts.figma : cfg.figma,
+    figma: (typeof opts.figma === "string" && opts.figma.trim() ? opts.figma.trim() : cfg.figma),
     testAccount: typeof opts.account === "string" ? opts.account : cfg.testAccount,
     appRun: cfg.app?.run,
     appUrl: cfg.app?.url,
@@ -325,6 +303,10 @@ async function cmdStart() {
   await api(`/api/rooms/${encodeURIComponent(room)}/meta`, meta);
   await api(`/api/rooms/${encodeURIComponent(room)}/duty`, { onDuty: true });
 
+  if (opts["save-ticket"]) {
+    mkdirSync(join(cwd, ".vscode"), { recursive: true });
+    writeFileSync(join(cwd, ".vscode", ".tcm-ticket"), room);
+  }
   if (!opts["no-terminal"]) openTerminals(room, cfg);
   if (!opts["no-open"]) openWeb(room);
 
@@ -332,14 +314,9 @@ async function cmdStart() {
     console.log("✔ đã lưu thông tin kickoff. Gửi bằng nút 🎫 Kickoff trên web khi sẵn sàng.");
     return;
   }
-  console.log("… chờ DEV và QA online (duyệt các prompt trong terminal nếu có)");
-  const ok = await waitAgents(room, 180_000);
-  if (!ok) {
-    console.log("⚠ chưa thấy đủ 2 agent sau 3 phút. Gửi kickoff bằng nút 🎫 Kickoff trên web khi sẵn sàng.");
-    return;
-  }
+  // Gửi ngay: hub giữ tin, agent vào phòng sau vẫn nhận được ở lần gọi tool hub đầu tiên (tin chưa đọc).
   const r = await api(`/api/rooms/${encodeURIComponent(room)}/kickoff`, { meta, send: true });
-  console.log(`✔ đã gửi kickoff #${r.message?.id} tới @all. Theo dõi: ${HUB}/#/${room}`);
+  console.log(`✔ đã gửi kickoff #${r.message?.id} tới @all: DEV/QA nhận ngay khi vào phòng. Theo dõi: ${HUB}/#/${room}`);
 }
 
 /** Bỏ comment // và /* *\/ ngoài chuỗi (tasks.json là JSONC) */
@@ -372,8 +349,9 @@ async function cmdVscode() {
   const { cfg } = loadConfig();
   const agents = cfg.agents ?? {};
   const T = "${input:tcmTicket}";
+  const F = "${input:tcmFigma}";
   const pres = (reveal) => ({ group: "tcm", panel: "dedicated", reveal, focus: false, showReuseMessage: false, clear: true });
-  let dev, qa, kick;
+  let dev, qa, kick, shell;
   if (wslCwd) {
     // VS Code mở repo qua Remote-WSL → task chạy bằng bash trong WSL
     const envOf = (role) => {
@@ -387,23 +365,41 @@ async function cmdVscode() {
       return e.length ? e.join(" ") + " " : "";
     };
     const base = toWslPath(ROOT);
-    dev = `${envOf("dev")}bash ${base}/scripts/claude-as.sh dev ${T}`;
-    qa = `${envOf("qa")}bash ${base}/scripts/claude-as.sh qa ${T}`;
-    kick = `bash ${base}/scripts/tcm start ${T} --no-terminal --no-open`;
+    // Mã ticket chỉ hỏi 1 lần (ở task kickoff), DEV/QA đọc lại từ .vscode/.tcm-ticket
+    const room = `"$(cat .vscode/.tcm-ticket)"`;
+    dev = `${envOf("dev")}bash ${base}/scripts/claude-as.sh dev ${room}`;
+    qa = `${envOf("qa")}bash ${base}/scripts/claude-as.sh qa ${room}`;
+    kick = `bash ${base}/scripts/tcm start ${T} --figma "${F}" --no-terminal --save-ticket`;
+    shell = { executable: "bash", args: ["-c"] };
   } else {
-    const ps = (role) => agentCmd(role, T, agents[role]).slice(1).map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ");
-    dev = `powershell.exe ${ps("dev").replace("-NoExit ", "")}`;
-    qa = `powershell.exe ${ps("qa").replace("-NoExit ", "")}`;
-    kick = `"${join(ROOT, "scripts", "tcm.cmd")}" start ${T} --no-terminal --no-open`;
+    const ROOM = "__ROOM__";
+    const room = "(Get-Content .vscode\\.tcm-ticket)";
+    const ps = (role) =>
+      agentCmd(role, ROOM, agents[role]).slice(1).filter((a) => a !== "-NoExit")
+        .map((a) => (a === ROOM ? room : /\s/.test(a) ? `'${a}'` : a)).join(" ");
+    dev = `powershell.exe ${ps("dev")}`;
+    qa = `powershell.exe ${ps("qa")}`;
+    kick = `& node '${join(ROOT, "scripts", "tcm.mjs")}' start ${T} --figma '${F}' --no-terminal --save-ticket`;
+    shell = { executable: "powershell.exe", args: ["-NoProfile", "-Command"] };
   }
+  const options = { shell };
   const tasks = [
-    { label: "tcm: DEV", type: "shell", command: dev, isBackground: true, problemMatcher: [], presentation: pres("always") },
-    { label: "tcm: QA", type: "shell", command: qa, isBackground: true, problemMatcher: [], presentation: pres("always") },
-    // Lưu thông tin kickoff, chờ 2 agent online rồi gửi kickoff (xem output ở terminal thứ 3)
-    { label: "tcm: kickoff", type: "shell", command: kick, problemMatcher: [], presentation: { ...pres("silent"), group: "tcm-kickoff" } },
-    { label: "tcm: start ticket", dependsOn: ["tcm: DEV", "tcm: QA", "tcm: kickoff"], dependsOrder: "parallel", problemMatcher: [] },
+    { label: "tcm: DEV", type: "shell", command: dev, options, isBackground: true, problemMatcher: [], presentation: pres("always") },
+    { label: "tcm: QA", type: "shell", command: qa, options, isBackground: true, problemMatcher: [], presentation: pres("always") },
+    // Hỏi mã ticket (1 lần), lưu thông tin kickoff, mở web, gửi kickoff ngay. Terminal tự đóng.
+    { label: "tcm: kickoff", type: "shell", command: kick, options, problemMatcher: [], presentation: { ...pres("never"), group: "tcm-kickoff", close: true } },
+    { label: "tcm: agents", dependsOn: ["tcm: DEV", "tcm: QA"], dependsOrder: "parallel", problemMatcher: [] },
+    { label: "tcm: start ticket", dependsOn: ["tcm: kickoff", "tcm: agents"], dependsOrder: "sequence", problemMatcher: [] },
   ];
-  const input = { id: "tcmTicket", type: "promptString", description: "Mã ticket (cũng là tên phòng), vd. TLPORTAL-10182" };
+  const inputs = [
+    { id: "tcmTicket", type: "promptString", description: "Mã ticket (cũng là tên phòng), vd. TLPORTAL-10182" },
+    {
+      id: "tcmFigma",
+      type: "promptString",
+      description: "Link Figma cho ticket này (để trống = dùng link trong .team-hub.json, không có thì dùng link trong ticket)",
+      default: cfg.figma ?? "",
+    },
+  ];
 
   const file = join(cwd, ".vscode", "tasks.json");
   let doc = { version: "2.0.0", tasks: [], inputs: [] };
@@ -411,19 +407,20 @@ async function cmdVscode() {
     try {
       doc = JSON.parse(stripJsonc(readFileSync(file, "utf8")));
     } catch (e) {
-      die(`không đọc được ${file} (${e.message}). Thêm tay các task sau:\n${JSON.stringify({ tasks, inputs: [input] }, null, 2)}`);
+      die(`không đọc được ${file} (${e.message}). Thêm tay các task sau:\n${JSON.stringify({ tasks, inputs }, null, 2)}`);
     }
   }
   const labels = new Set(tasks.map((t) => t.label));
   doc.version ??= "2.0.0";
   doc.tasks = [...(doc.tasks ?? []).filter((t) => !labels.has(t.label)), ...tasks];
-  doc.inputs = [...(doc.inputs ?? []).filter((i) => i.id !== input.id), input];
+  const ids = new Set(inputs.map((i) => i.id));
+  doc.inputs = [...(doc.inputs ?? []).filter((i) => !ids.has(i.id)), ...inputs];
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(doc, null, 2) + "\n");
   console.log(`✔ ghi ${file}`);
-  ensureExclude([".vscode/tasks.json"]);
+  ensureExclude([".vscode/tasks.json", ".vscode/.tcm-ticket"]);
   console.log(`  VS Code: Ctrl+Shift+P → "Tasks: Run Task" → "tcm: start ticket" → nhập mã ticket.`);
-  console.log(`  2 terminal DEV | QA mở chia đôi trong panel. Task "tcm: kickoff" tự gửi kickoff khi 2 agent online.`);
+  console.log(`  2 terminal DEV | QA mở chia đôi trong panel, web mở ở trình duyệt, kickoff gửi ngay, agent nhận khi vào phòng.`);
 }
 
 async function cmdStop() {
