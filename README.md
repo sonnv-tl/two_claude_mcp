@@ -112,11 +112,24 @@ tcm stop TLPORTAL-10182               # tắt chế độ trực
 | `check_inbox()` | Xem tin mới, không chờ |
 | `get_history(limit?, before_id?)` | Lịch sử phòng |
 | `list_participants()` | Ai đang online, đang làm gì |
-| `set_status(text)` | Trạng thái hiển thị trên web |
+| `set_status(text, step?)` | Trạng thái + bước B1–B7 hiển thị trên web |
+| `report_bug(title, detail, severity?, tc?, to?, screenshots?)` | Tạo BUG-xx trên bảng bug + gửi bug_report cho DEV |
+| `update_bug(code, status, note?, screenshots?)` | Đổi trạng thái bug (fixed, disputed, verified, reopened, rejected…) |
+| `get_board()` | Tiến độ + bảng bug dạng markdown (số liệu cho B7) |
 
 Ở chế độ channel, tin được đẩy vào session dưới dạng `<channel source="team-hub" from=... type=... msg_id=...>`. Ở cả hai chế độ, tin chưa đọc cũng được **đính kèm vào kết quả của mọi tool** hub. Các loại tin: `chat`, `question`, `ac_deviation`, `test_case`, `bug_report`, `handoff`.
 
 Persona mặc định nằm trong `packages/bridge/src/personas.ts`. **DEV**: source + unit/integration test, chạy app và báo URL cho QA. **QA**: không viết unit test; viết test case nghiệp vụ vào `qa/testcases/`, soát code để báo lệch AC sớm, chạy test case trên browser thật, ghi kết quả vào `qa/runs/`, báo bug kèm screenshot. Có thể override bằng biến `AGENT_PERSONA_FILE=path/to/persona.md`.
+
+## Bảng ticket (web)
+
+- **Thanh B1–B7** dưới tiêu đề phòng: mỗi agent đang ở bước nào và đã ở mỗi bước bao lâu. Lấy từ `set_status` (tham số `step`, hoặc text bắt đầu bằng `B5 …`) và tin nhắn bắt đầu bằng `[B4] …`.
+- **Tab Bug** (cột phải): mỗi bug có mã, mức độ, TC, trạng thái và lịch sử chuyển trạng thái. Bấm mã bug để nhảy tới tin báo bug.
+  - Luồng: `open → fixed → verified` (hoặc `reopened`); DEV phản biện `→ disputed`; QA giữ quan điểm `disputed → open` hoặc chấp nhận `→ rejected`.
+  - **Giới hạn tranh luận do hub đếm**: mỗi bên tối đa 2 lượt cho một bug. Lượt thứ 3, hub tự chuyển bug sang **Chờ user phân xử**, nhắn cả hai dừng tranh luận, web kêu và tự mở tab Bug. Bạn chọn "Là bug → DEV fix" hoặc "Không phải bug", kèm kết luận. Agent không đổi được bug đang chờ bạn.
+  - Bạn có thể đổi trạng thái bất kỳ bug nào (mở ▾ trên thẻ bug).
+- **Ảnh bằng chứng**: agent truyền đường dẫn ảnh (vd. `qa/screenshots/bug-01.png`) vào `screenshots`, bridge tải ảnh lên hub (`data/attachments/`), web hiện ảnh thu nhỏ trong tin, bấm để xem lớn.
+- **Chống lặp**: 20 tin agent↔agent liên tiếp mà không đổi bước, không đổi trạng thái bug, bạn cũng không nhắn, thì web cảnh báo. 40 tin thì hub yêu cầu mỗi bên gửi bạn 1 tin tóm tắt rồi chờ. Bạn nhắn bất kỳ tin nào là bộ đếm reset. Đổi ngưỡng bằng `HUB_IDLE_WARN`.
 
 ## Biến môi trường
 
@@ -124,6 +137,8 @@ Persona mặc định nằm trong `packages/bridge/src/personas.ts`. **DEV**: so
 |---|---|---|
 | `HUB_PORT`, `HUB_HOST` | hub | `4747`, `127.0.0.1` |
 | `HUB_DB` | hub | `data/hub.db` |
+| `HUB_ATTACHMENTS` | hub | `data/attachments` (cạnh DB) |
+| `HUB_IDLE_WARN` | hub | `20` (cảnh báo lặp; x2 = yêu cầu dừng) |
 | `HUB_URL` | bridge | `ws://127.0.0.1:4747/ws` |
 | `HUB_ROOM` | bridge | (trống = bridge nghỉ) |
 | `AGENT_NAME`, `AGENT_ROLE` | bridge | do script đặt |
@@ -143,6 +158,6 @@ npm run dev:web   # terminal 2 → http://localhost:5173 (proxy /api, /ws về h
 - [x] **Phase 2a**: đẩy tin realtime vào session (Claude Code channels), ô chat cho user trên web, QA test bằng browser
 - [x] **Daily 1**: Stop hook giữ trực + chống lặp, cảnh báo chờ duyệt quyền, bật/tắt trực trên web, hub chạy nền, bridge nghỉ khi không có phòng, Figma qua Desktop Bridge
 - [x] **Daily 2**: `tcm start <TICKET>` (Windows Terminal hoặc VS Code tasks, 2 pane + tự kickoff), `.team-hub.json` theo project, form kickoff trên web
-- [ ] **Daily 3**: bảng tiến độ B1–B7, bug/test case board, chống loop agent↔agent
-- [ ] **Phase 3**: bảng task/bug, tin có cấu trúc (bug report, AC checklist)
-- [ ] **Phase 4**: export hội thoại, auth khi mở ra LAN, script demo
+- [x] **Phase 4**: thanh tiến độ B1–B7, bảng bug + phân xử trên web, giới hạn tranh luận do hub đếm, ảnh bằng chứng, chống lặp agent↔agent
+- [ ] **Phase 5**: `tcm resume <TICKET>` (tóm tắt phòng khi vào lại), đóng ticket (lưu báo cáo B7, nút đăng tổng kết lên Backlog)
+- [ ] **Phase 6**: file kinh nghiệm theo dự án, số liệu qua nhiều ticket

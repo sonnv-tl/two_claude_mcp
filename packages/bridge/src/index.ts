@@ -2,10 +2,18 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { basename, resolve as resolvePath } from "node:path";
 import {
   BROADCAST,
   DEFAULT_HUB_PORT,
   MESSAGE_TYPES,
+  BUG_SEVERITIES,
+  BUG_STATUSES,
+  BUG_STATUS_LABEL,
+  MAX_DISPUTE_ROUNDS,
+  STEPS,
+  boardMarkdown,
   isAddressedTo,
   type ChatMessage,
   type Participant,
@@ -167,6 +175,12 @@ server.server.oninitialized = () => {
   mcpReady = true;
 };
 
+const screenshotsSchema = z
+  .array(z.string())
+  .max(6)
+  .optional()
+  .describe("Đường dẫn file ảnh (png/jpg/webp) trong repo, vd. qa/screenshots/bug-01.png. Ảnh được tải lên hub và hiện trên web.");
+
 server.registerTool(
   "send_message",
   {
@@ -182,17 +196,21 @@ server.registerTool(
         .optional()
         .describe("Loại tin, mặc định chat"),
       reply_to: z.number().int().optional().describe("id tin nhắn đang trả lời"),
+      screenshots: screenshotsSchema,
     },
   },
-  ({ to, content, type, reply_to }) =>
+  ({ to, content, type, reply_to, screenshots }) =>
     guard(async () => {
+      const { urls, warnings } = await uploadAll(screenshots);
       const msg = await hub.sendMessage({
         to,
-        content,
+        content: content + urls.map((u, i) => `
+
+![ảnh ${i + 1}](${u})`).join(""),
         type: type as ChatMessage["type"] | undefined,
         replyTo: reply_to ?? null,
       });
-      return result(`Đã gửi #${msg.id} tới ${msg.to}.`);
+      return result(`Đã gửi #${msg.id} tới ${msg.to}.${warnings}`);
     }),
 );
 
@@ -288,17 +306,108 @@ server.registerTool(
   "set_status",
   {
     title: "Cập nhật trạng thái",
-    description: 'Đặt trạng thái ngắn hiển thị cho mọi người (vd. "đang viết test cho /login"). Truyền chuỗi rỗng để xoá.',
+    description:
+      'Đặt trạng thái ngắn hiển thị cho mọi người (vd. "B5 · đang test TC-04"). Truyền chuỗi rỗng để xoá. ' +
+      "Truyền `step` (B1–B7) mỗi khi chuyển bước để web hiện tiến độ; text bắt đầu bằng B1…B7 cũng được tính.",
     inputSchema: {
       text: z.string().max(200),
+      step: z.enum(STEPS).optional().describe("Bước hiện tại của bạn trong quy trình B1–B7"),
     },
   },
-  ({ text }) =>
+  ({ text, step }) =>
     guard(async () => {
-      await hub.setStatus(text || null);
-      return result(text ? `Trạng thái: ${text}` : "Đã xoá trạng thái.");
+      await hub.setStatus(text || null, step ?? null);
+      return result(`${step ? `[${step}] ` : ""}${text ? `Trạng thái: ${text}` : "Đã xoá trạng thái."}`);
     }),
 );
+
+server.registerTool(
+  "report_bug",
+  {
+    title: "Báo bug",
+    description:
+      "Tạo bug mới trên bảng bug của phòng (tự đánh mã BUG-xx) và gửi tin bug_report cho DEV. " +
+      "Dùng tool này thay cho send_message type bug_report để bug được theo dõi trạng thái.",
+    inputSchema: {
+      title: z.string().min(3).max(160).describe("Tóm tắt ngắn, vd. 'Nút Lưu không disable khi form lỗi'"),
+      severity: z.enum(BUG_SEVERITIES).optional().describe("high | med | low, mặc định med"),
+      tc: z.string().max(40).optional().describe("Test case liên quan, vd. TC-04"),
+      detail: z.string().min(1).describe("Markdown: URL, bước tái hiện, expected (trích AC), actual, console error"),
+      to: z.string().optional().describe('Người nhận, mặc định DEV của phòng'),
+      screenshots: screenshotsSchema,
+    },
+  },
+  ({ title, severity, tc, detail, to, screenshots }) =>
+    guard(async () => {
+      const { urls, warnings } = await uploadAll(screenshots);
+      const { bug, message } = await hub.createBug({ title, severity, tc, detail, to, attachments: urls });
+      return result(`Đã tạo ${bug.code} (#${message.id}) gửi ${message.to}.${warnings}`);
+    }),
+);
+
+server.registerTool(
+  "update_bug",
+  {
+    title: "Cập nhật trạng thái bug",
+    description:
+      "Đổi trạng thái bug và gửi kèm ghi chú cho bên kia. Luồng: open|reopened → fixed (DEV đã fix) | disputed (DEV phản biện, kèm note trích AC) | rejected; " +
+      "fixed → verified (QA retest pass) | reopened (retest fail); disputed → open (QA giữ quan điểm, kèm note) | rejected (QA chấp nhận). " +
+      `Mỗi bên tối đa ${MAX_DISPUTE_ROUNDS} lượt tranh luận cho một bug, quá thì hub tự chuyển "chờ user phân xử" (need_user); khi đó chỉ user đổi được.`,
+    inputSchema: {
+      code: z.string().describe("Mã bug, vd. BUG-01"),
+      status: z.enum(BUG_STATUSES).describe("Trạng thái mới. need_user = tự xin user phân xử"),
+      note: z.string().optional().describe("Lý do / cách fix / kết quả retest. Bắt buộc khi disputed hoặc giữ quan điểm (open)."),
+      screenshots: screenshotsSchema,
+    },
+  },
+  ({ code, status, note, screenshots }) =>
+    guard(async () => {
+      const { urls, warnings } = await uploadAll(screenshots);
+      const { bug, message, escalated } = await hub.updateBug({ code, status, note, attachments: urls });
+      return result(
+        escalated
+          ? `${bug.code} đã hết lượt tranh luận → chuyển "chờ user phân xử". Dừng tranh luận bug này, làm việc khác và chờ user.${warnings}`
+          : `${bug.code}: ${BUG_STATUS_LABEL[bug.status]} (#${message.id} gửi ${message.to}).${warnings}`,
+      );
+    }),
+);
+
+server.registerTool(
+  "get_board",
+  {
+    title: "Xem bảng ticket",
+    description: "Tiến độ B1–B7 của từng người và bảng bug (trạng thái, số lượt tranh luận). Dùng khi retest, và lấy số liệu cho báo cáo B7.",
+    inputSchema: {},
+  },
+  () => guard(async () => result(boardMarkdown(await hub.board()))),
+);
+
+/** Tìm file ảnh agent đưa: tương đối theo repo, tuyệt đối, hoặc path Linux khi repo nằm trong WSL */
+function resolveFile(p: string): string | null {
+  const cwd = process.cwd();
+  const cands = [p, resolvePath(cwd, p)];
+  const unc = cwd.match(/^(\\\\wsl(?:\.localhost|\$)\\[^\\]+)/i);
+  if (unc && p.startsWith("/")) cands.push(unc[1] + p.replace(/\//g, "\\"));
+  return cands.find((c) => existsSync(c) && statSync(c).isFile()) ?? null;
+}
+
+async function uploadAll(paths: string[] | undefined): Promise<{ urls: string[]; warnings: string }> {
+  const urls: string[] = [];
+  const bad: string[] = [];
+  for (const p of paths ?? []) {
+    const file = resolveFile(p);
+    if (!file) {
+      bad.push(`${p}: không tìm thấy`);
+      continue;
+    }
+    try {
+      urls.push((await hub.upload(basename(file), readFileSync(file))).url);
+    } catch (e) {
+      bad.push(`${p}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return { urls, warnings: bad.length ? `\n⚠️ Ảnh không tải được (${process.cwd()}):\n- ${bad.join("\n- ")}` : "" };
+}
 
 // ---------- start ----------
 

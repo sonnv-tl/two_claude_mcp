@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ChatMessage, MessageType, Participant, RoomInfo, ServerOp } from "@tcm/shared";
+import type { Board, BugStatus, ChatMessage, MessageType, Participant, RoomInfo, ServerOp } from "@tcm/shared";
+
+const EMPTY_BOARD: Board = { steps: [], bugs: [], idleChatter: 0, warning: null };
 
 export interface OutgoingMessage {
   to: string;
@@ -21,6 +23,7 @@ export function useRoom(room: string | null) {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [conn, setConn] = useState<ConnState>("connecting");
   const [onDuty, setOnDuty] = useState(true);
+  const [board, setBoard] = useState<Board>(EMPTY_BOARD);
   const lastId = useRef(0);
   const wsRef = useRef<WebSocket | null>(null);
   const pending = useRef(new Map<string, { resolve: (m: ChatMessage) => void; reject: (e: Error) => void }>());
@@ -29,6 +32,7 @@ export function useRoom(room: string | null) {
   useEffect(() => {
     setMessages([]);
     setParticipants([]);
+    setBoard(EMPTY_BOARD);
     lastId.current = 0;
     if (!room) return;
 
@@ -64,6 +68,7 @@ export function useRoom(room: string | null) {
         else if (op.op === "welcome") setOnDuty(op.onDuty ?? true);
         else if (op.op === "room") setOnDuty(op.onDuty);
         else if (op.op === "participants") setParticipants(op.participants);
+        else if (op.op === "board") setBoard(op.board);
         else if (op.op === "result" || op.op === "error") {
           const p = op.reqId ? pending.current.get(op.reqId) : undefined;
           if (!p) return;
@@ -103,7 +108,13 @@ export function useRoom(room: string | null) {
   const send = useCallback((m: OutgoingMessage) => request<ChatMessage>({ op: "send", ...m }), [request]);
   const setDuty = useCallback((v: boolean) => request<boolean>({ op: "duty", onDuty: v }), [request]);
 
-  return { messages, participants, conn, send, onDuty, setDuty };
+  /** User phân xử / đổi trạng thái bug */
+  const updateBug = useCallback(
+    (code: string, status: BugStatus, note?: string) => request<unknown>({ op: "bug_update", code, status, note }),
+    [request],
+  );
+
+  return { messages, participants, conn, send, onDuty, setDuty, board, updateBug };
 }
 
 export function useRooms(intervalMs = 5000) {

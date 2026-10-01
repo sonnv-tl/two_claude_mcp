@@ -1,9 +1,10 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { BROADCAST, MESSAGE_TYPES, type ChatMessage, type MessageType, type Participant } from "@tcm/shared";
 import { useRoom, useRooms, type OutgoingMessage } from "./useRoom";
 import { KickoffDialog } from "./KickoffDialog";
+import { BugPanel, Stepper } from "./Board";
 
 const HUMAN = "user";
 const USER_TYPES: MessageType[] = ["chat", "question", "handoff"];
@@ -81,7 +82,23 @@ function useHashRoom(): [string | null, (r: string) => void] {
 export function App() {
   const rooms = useRooms();
   const [room, setRoom] = useHashRoom();
-  const { messages, participants, conn, send, onDuty, setDuty } = useRoom(room);
+  const { messages, participants, conn, send, onDuty, setDuty, board, updateBug } = useRoom(room);
+  const [tab, setTab] = useState<"people" | "bugs">("people");
+  const openBugs = board.bugs.filter((b) => ["open", "reopened", "fixed", "disputed", "need_user"].includes(b.status)).length;
+  const needUser = board.bugs.some((b) => b.status === "need_user");
+  // Có bug chờ phân xử → mở tab Bug
+  useEffect(() => {
+    if (needUser) setTab("bugs");
+  }, [needUser]);
+  const jump = (id: number) => {
+    setHidden(new Set());
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`m${id}`);
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      el?.classList.add("flash");
+      setTimeout(() => el?.classList.remove("flash"), 1600);
+    });
+  };
   useAttentionAlerts(room, participants);
   const [hidden, setHidden] = useState<Set<MessageType>>(new Set());
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
@@ -144,6 +161,7 @@ export function App() {
             ))}
           </div>
         </header>
+        <Stepper board={board} colorOf={(n) => colorOf(n, participants)} />
         <MessageList messages={visible} byId={byId} participants={participants} onReply={setReplyTo} />
         <Composer
           key={room ?? ""}
@@ -159,8 +177,17 @@ export function App() {
       </main>
 
       <aside className="people">
-        <div className="section-title">Thành viên</div>
-        {participants.map((p) => (
+        <div className="tabs">
+          <button className={tab === "people" ? "active" : ""} onClick={() => setTab("people")}>Thành viên</button>
+          <button className={tab === "bugs" ? "active" : ""} onClick={() => setTab("bugs")}>
+            Bug {board.bugs.length > 0 && <span className="muted">{openBugs}/{board.bugs.length}</span>}
+            {(needUser || board.warning) && <span className="badge-dot" />}
+          </button>
+        </div>
+        {tab === "bugs" && (
+          <BugPanel board={board} participants={participants} onJump={jump} onUpdate={updateBug} disabled={conn !== "open"} />
+        )}
+        {tab === "people" && participants.map((p) => (
           <div key={p.name} className={`person ${p.attention ? "alert" : ""}`}>
             <span className={`dot ${p.online ? "on" : ""}`} />
             <div>
@@ -236,7 +263,7 @@ function Composer({
     <footer className="composer">
       {replyTo && (
         <div className="composer-reply small">
-          ↳ trả lời #{replyTo.id} của <strong>{replyTo.from}</strong>: {replyTo.content.slice(0, 100)}
+          ↳ trả lời #{replyTo.id} của <strong>{replyTo.from}</strong>: {plain(replyTo.content).slice(0, 100)}
           <button className="link" onClick={onCancelReply}>huỷ</button>
         </div>
       )}
@@ -276,6 +303,27 @@ function Composer({
     </footer>
   );
 }
+
+/** Trích dẫn ngắn: bỏ ký tự markdown, ảnh thành 🖼 */
+function plain(md: string) {
+  return md
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "🖼")
+    .replace(/[*_`#>|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Ảnh bằng chứng: thu nhỏ trong tin, bấm mở tab mới */
+const MD_COMPONENTS = {
+  img: ({ src, alt }: { src?: string; alt?: string }) => (
+    <a href={src} target="_blank" rel="noreferrer" className="shot">
+      <img src={src} alt={alt ?? ""} loading="lazy" />
+    </a>
+  ),
+  a: ({ href, children }: { href?: string; children?: ReactNode }) => (
+    <a href={href} target="_blank" rel="noreferrer">{children}</a>
+  ),
+};
 
 function MessageList({
   messages,
@@ -324,11 +372,11 @@ function MessageList({
                 document.getElementById(`m${m.replyTo}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
               }}>
                 ↳ trả lời #{m.replyTo}
-                {byId.get(m.replyTo) && `: ${byId.get(m.replyTo)!.content.slice(0, 80)}`}
+                {byId.get(m.replyTo) && `: ${plain(byId.get(m.replyTo)!.content).slice(0, 80)}`}
               </a>
             )}
             <div className="md">
-              <Markdown remarkPlugins={[remarkGfm]}>{m.content}</Markdown>
+              <Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{m.content}</Markdown>
             </div>
           </article>
         ),

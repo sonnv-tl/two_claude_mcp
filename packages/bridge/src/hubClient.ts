@@ -1,6 +1,17 @@
 import { EventEmitter } from "node:events";
 import WebSocket from "ws";
-import type { ChatMessage, ClientOp, Participant, ParticipantKind, ServerOp } from "@tcm/shared";
+import type {
+  Board,
+  Bug,
+  BugSeverity,
+  BugStatus,
+  ChatMessage,
+  ClientOp,
+  Participant,
+  ParticipantKind,
+  ServerOp,
+  Step,
+} from "@tcm/shared";
 
 export interface HubClientOptions {
   url: string;
@@ -177,8 +188,20 @@ export class HubClient extends EventEmitter {
   listParticipants() {
     return this.request<Participant[]>({ op: "participants" });
   }
-  setStatus(text: string | null) {
-    return this.request<boolean>({ op: "status", text });
+  setStatus(text: string | null, step?: Step | null) {
+    return this.request<boolean>({ op: "status", text, step });
+  }
+  board() {
+    return this.request<Board>({ op: "board" });
+  }
+  createBug(b: { title: string; severity?: BugSeverity; tc?: string | null; detail: string; to?: string; attachments?: string[] }) {
+    return this.request<{ bug: Bug; message: ChatMessage }>({ op: "bug_create", ...b });
+  }
+  updateBug(u: { code: string; status: BugStatus; note?: string | null; attachments?: string[] }) {
+    return this.request<{ bug: Bug; message: ChatMessage; escalated: boolean }>({ op: "bug_update", ...u });
+  }
+  upload(filename: string, data: Buffer) {
+    return this.request<{ url: string }>({ op: "upload", filename, data: data.toString("base64") }, 30_000);
   }
 }
 

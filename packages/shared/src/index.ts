@@ -49,6 +49,96 @@ export interface RoomInfo {
   onDuty: boolean;
 }
 
+// ---------- Bảng ticket: tiến độ B1–B7 + bug ----------
+
+export const STEPS = ["B1", "B2", "B3", "B4", "B5", "B6", "B7"] as const;
+export type Step = (typeof STEPS)[number];
+export const STEP_LABEL: Record<Step, string> = {
+  B1: "Plan ∥ Test case",
+  B2: "Review chéo",
+  B3: "Implement",
+  B4: "Handoff",
+  B5: "Test ↔ Phản biện",
+  B6: "Retest",
+  B7: "Tổng kết",
+};
+
+/** Lấy bước từ đầu chuỗi: "[B2] …", "B5 · đang test" → "B2", "B5" */
+export function parseStep(text: string | null | undefined): Step | null {
+  const m = text?.match(/^\s*\[?\s*B([1-7])\b/i);
+  return m ? (`B${m[1]}` as Step) : null;
+}
+
+export interface StepEvent {
+  name: string;
+  step: Step;
+  at: string;
+}
+
+export const BUG_STATUSES = ["open", "fixed", "verified", "reopened", "disputed", "rejected", "need_user"] as const;
+export type BugStatus = (typeof BUG_STATUSES)[number];
+export const BUG_STATUS_LABEL: Record<BugStatus, string> = {
+  open: "Mở",
+  fixed: "Đã fix (chờ retest)",
+  verified: "Retest pass",
+  reopened: "Mở lại",
+  disputed: "DEV phản biện",
+  rejected: "Không phải bug",
+  need_user: "Chờ user phân xử",
+};
+export const BUG_SEVERITIES = ["high", "med", "low"] as const;
+export type BugSeverity = (typeof BUG_SEVERITIES)[number];
+
+/** Chuyển trạng thái hợp lệ cho agent. "need_user" chỉ user (web) mới gỡ được. */
+export const BUG_TRANSITIONS: Record<BugStatus, BugStatus[]> = {
+  open: ["fixed", "disputed", "rejected", "need_user"],
+  reopened: ["fixed", "disputed", "rejected", "need_user"],
+  fixed: ["verified", "reopened"],
+  disputed: ["open", "rejected", "need_user"],
+  verified: ["reopened"],
+  rejected: ["reopened"],
+  need_user: [],
+};
+/** Tối đa số lượt tranh luận mỗi bên cho một bug, quá thì hub tự chuyển need_user */
+export const MAX_DISPUTE_ROUNDS = 2;
+
+export interface BugEvent {
+  actor: string;
+  from: BugStatus | null;
+  to: BugStatus;
+  note: string | null;
+  msgId: number | null;
+  at: string;
+}
+
+export interface Bug {
+  code: string;
+  title: string;
+  severity: BugSeverity;
+  status: BugStatus;
+  tc: string | null;
+  reporter: string;
+  assignee: string;
+  /** Tin bug_report gốc */
+  msgId: number;
+  /** Số lượt tranh luận theo tên participant */
+  rounds: Record<string, number>;
+  createdAt: string;
+  updatedAt: string;
+  events: BugEvent[];
+}
+
+export interface Board {
+  steps: StepEvent[];
+  bugs: Bug[];
+  /** Số tin agent↔agent liên tiếp không có tiến triển (đổi bước, đổi trạng thái bug, user nhắn) */
+  idleChatter: number;
+  warning: string | null;
+}
+
+export const ATTACHMENT_EXT = [".png", ".jpg", ".jpeg", ".gif", ".webp"] as const;
+export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+
 // ---------- client -> hub ----------
 
 export type HelloOp =
@@ -61,7 +151,23 @@ export type ClientOp =
   | { op: "send"; reqId?: string; to: string; type?: MessageType; content: string; replyTo?: number | null }
   | { op: "history"; reqId?: string; limit?: number; beforeId?: number; sinceId?: number }
   | { op: "participants"; reqId?: string }
-  | { op: "status"; reqId?: string; text: string | null }
+  | { op: "status"; reqId?: string; text: string | null; step?: Step | null }
+  /** Board của phòng (bước + bug) */
+  | { op: "board"; reqId?: string }
+  | {
+      op: "bug_create";
+      reqId?: string;
+      title: string;
+      severity?: BugSeverity;
+      tc?: string | null;
+      detail: string;
+      to?: string;
+      attachments?: string[];
+    }
+  /** Agent theo BUG_TRANSITIONS; user (web) đổi sang trạng thái bất kỳ (phân xử) */
+  | { op: "bug_update"; reqId?: string; code: string; status: BugStatus; note?: string | null; attachments?: string[] }
+  /** Tải ảnh (base64) lên hub, trả về { url } dùng được trong markdown */
+  | { op: "upload"; reqId?: string; filename: string; data: string }
   /** Đánh dấu đã đọc tới id này (dùng cho agent để tính unread khi reconnect) */
   | { op: "ack"; upToId: number }
   /** Bridge báo đang / thôi chờ trong wait_for_messages */
@@ -76,6 +182,7 @@ export type ServerOp =
   | { op: "room"; room: string; onDuty: boolean }
   | { op: "message"; message: ChatMessage }
   | { op: "participants"; room: string; participants: Participant[] }
+  | { op: "board"; room: string; board: Board }
   | { op: "result"; reqId: string; data: unknown }
   | { op: "error"; reqId?: string; error: string }
   | { op: "kicked"; reason: string };
@@ -98,6 +205,61 @@ export interface HookRequest {
 export interface HookResponse {
   block?: boolean;
   reason?: string;
+}
+
+/** Bước hiện tại + thời gian ở mỗi bước, theo từng participant */
+export function stepSummary(steps: StepEvent[], nowMs = Date.now()) {
+  const byName = new Map<string, { current: Step; since: string; spent: Partial<Record<Step, number>> }>();
+  const sorted = [...steps].sort((a, b) => a.at.localeCompare(b.at));
+  for (let i = 0; i < sorted.length; i++) {
+    const e = sorted[i];
+    const next = sorted.slice(i + 1).find((x) => x.name === e.name);
+    const ms = (next ? Date.parse(next.at) : nowMs) - Date.parse(e.at);
+    const s = byName.get(e.name) ?? { current: e.step, since: e.at, spent: {} };
+    s.spent[e.step] = (s.spent[e.step] ?? 0) + Math.max(0, ms);
+    if (!next) Object.assign(s, { current: e.step, since: e.at });
+    byName.set(e.name, s);
+  }
+  return byName;
+}
+
+export function fmtDuration(ms: number): string {
+  const m = Math.round(ms / 60_000);
+  if (m < 1) return "<1p";
+  if (m < 60) return `${m}p`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
+}
+
+/** Board dạng markdown, cho agent đọc (get_board) và làm số liệu B7 */
+export function boardMarkdown(board: Board): string {
+  const out: string[] = ["## Tiến độ"];
+  const sum = stepSummary(board.steps);
+  if (!sum.size) out.push("_Chưa ai cập nhật bước (dùng set_status với step)._");
+  for (const [name, s] of sum) {
+    const spent = STEPS.filter((st) => s.spent[st]).map((st) => `${st} ${fmtDuration(s.spent[st]!)}`).join(" · ");
+    out.push(`- **${name}**: đang ở ${s.current} (${STEP_LABEL[s.current]}) · ${spent}`);
+  }
+  out.push("", "## Bug");
+  if (!board.bugs.length) out.push("_Chưa có bug._");
+  else {
+    const count = (f: (b: Bug) => boolean) => board.bugs.filter(f).length;
+    out.push(
+      `Tổng ${board.bugs.length} · đã fix + retest pass ${count((b) => b.status === "verified")} · ` +
+        `không phải bug ${count((b) => b.status === "rejected")} · chờ user ${count((b) => b.status === "need_user")} · ` +
+        `còn mở ${count((b) => ["open", "reopened", "fixed", "disputed"].includes(b.status))}`,
+      "",
+      "| Bug | Mức | TC | Tiêu đề | Trạng thái | Tranh luận |",
+      "|---|---|---|---|---|---|",
+      ...board.bugs.map(
+        (b) =>
+          `| ${b.code} | ${b.severity} | ${b.tc ?? ""} | ${b.title.replace(/\|/g, "\\|")} | ${BUG_STATUS_LABEL[b.status]} | ${
+            Object.entries(b.rounds).map(([n, c]) => `${n} ${c}`).join(", ") || "-"
+          } |`,
+      ),
+    );
+  }
+  if (board.warning) out.push("", `⚠️ ${board.warning}`);
+  return out.join("\n");
 }
 
 // ---------- Kickoff ticket ----------

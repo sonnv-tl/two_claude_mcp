@@ -9,6 +9,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": hub,
+      "/att": hub,
       "/ws": { target: hub.replace(/^http/, "ws"), ws: true },
     },
   },

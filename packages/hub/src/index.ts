@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { format } from "node:util";
 
 // `--log <file>`: ghi log (UTF-8) ra file, dùng khi chạy nền (scripts/hub-service.ps1)
@@ -23,6 +24,21 @@ import {
   BROADCAST,
   DEFAULT_HUB_PORT,
   MESSAGE_TYPES,
+  ATTACHMENT_EXT,
+  BUG_SEVERITIES,
+  BUG_STATUSES,
+  BUG_STATUS_LABEL,
+  BUG_TRANSITIONS,
+  MAX_ATTACHMENT_BYTES,
+  MAX_DISPUTE_ROUNDS,
+  STEPS,
+  parseStep,
+  type Board,
+  type Bug,
+  type BugSeverity,
+  type BugStatus,
+  type MessageType,
+  type Step,
   buildKickoff,
   isAddressedTo,
   type KickoffMeta,
@@ -44,7 +60,96 @@ const DB_FILE = process.env.HUB_DB ?? join(repoRoot, "data", "hub.db");
 const WEB_DIST = process.env.HUB_WEB_DIST ?? join(repoRoot, "packages", "web", "dist");
 const NAME_RE = /^[a-zA-Z0-9_.-]{1,40}$/;
 
+/** Lỗi do dữ liệu client gửi sai: trả lỗi cho client, không log như sự cố */
+class OpError extends Error {}
+
 const store = new Store(DB_FILE);
+const ATT_DIR = process.env.HUB_ATTACHMENTS ?? join(dirname(DB_FILE), "attachments");
+/** Số tin agent↔agent liên tiếp không tiến triển trước khi cảnh báo (x2: yêu cầu agent dừng, hỏi user) */
+const IDLE_WARN = Math.max(4, Number(process.env.HUB_IDLE_WARN ?? 20));
+
+// ---------- board: tiến độ + bug + chống vòng lặp ----------
+
+interface RoomRuntime {
+  idleChatter: number;
+  /** 0: chưa cảnh báo, 1: đã cảnh báo trên web, 2: đã yêu cầu agent dừng */
+  warned: 0 | 1 | 2;
+}
+const roomRts = new Map<string, RoomRuntime>();
+function roomRt(room: string): RoomRuntime {
+  let r = roomRts.get(room);
+  if (!r) roomRts.set(room, (r = { idleChatter: 0, warned: 0 }));
+  return r;
+}
+
+function boardOf(room: string): Board {
+  const r = roomRt(room);
+  return {
+    steps: store.listSteps(room),
+    bugs: store.listBugs(room),
+    idleChatter: r.idleChatter,
+    warning:
+      r.warned > 0
+        ? `${r.idleChatter} tin agent↔agent liên tiếp mà không đổi bước, không đổi trạng thái bug, user cũng không nhắn. Có thể đang bế tắc.`
+        : null,
+  };
+}
+
+function broadcastBoard(room: string) {
+  const board = boardOf(room);
+  const op: ServerOp = { op: "board", room, board };
+  for (const c of roomViewers(room)) send(c, op);
+  // Cảnh báo cho user (web kêu + thông báo desktop khi text đổi)
+  const waitUser = board.bugs.filter((b) => b.status === "need_user").map((b) => b.code);
+  const text = [waitUser.length ? `⚖️ ${waitUser.join(", ")} chờ bạn phân xử` : null, board.warning && "🔁 Agent có thể đang lặp"]
+    .filter(Boolean)
+    .join(" · ");
+  setAttention(room, HUMAN_NAME, text || null);
+}
+
+/** Có tiến triển (đổi bước, đổi trạng thái bug, user nhắn) → reset bộ đếm vòng lặp */
+function progress(room: string) {
+  const r = roomRt(room);
+  const changed = r.idleChatter !== 0 || r.warned !== 0;
+  Object.assign(r, { idleChatter: 0, warned: 0 });
+  return changed;
+}
+
+/** Tin agent↔agent không kèm tiến triển: đếm, quá ngưỡng thì cảnh báo / yêu cầu dừng */
+function chatter(room: string) {
+  const r = roomRt(room);
+  r.idleChatter++;
+  if (r.idleChatter >= IDLE_WARN && r.warned === 0) {
+    r.warned = 1;
+    systemMessage(room, `⚠️ ${r.idleChatter} tin agent↔agent liên tiếp không có tiến triển. Xem lại có đang lặp không.`);
+    return true;
+  }
+  if (r.idleChatter >= IDLE_WARN * 2 && r.warned === 1) {
+    r.warned = 2;
+    hubMessage(
+      room,
+      `⚠️ **Dừng trao đổi qua lại.** Đã ${r.idleChatter} tin giữa các agent mà không đổi bước, không đổi trạng thái bug. ` +
+        "Mỗi bên gửi `user` **1 tin** tóm tắt đang vướng gì và cần user quyết gì, rồi `wait_for_messages` chờ user. " +
+        "Không nhắn tiếp cho nhau tới khi user trả lời.",
+      "question",
+    );
+    return true;
+  }
+  return false;
+}
+
+/** Tin do hub gửi mà agent NHẬN được (khác system message chỉ hiện trên web) */
+function hubMessage(room: string, content: string, type: MessageType = "chat", replyTo: number | null = null) {
+  const msg = store.addMessage({ room, from: "hub", to: BROADCAST, type, content, replyTo });
+  deliver(msg);
+  return msg;
+}
+
+/** Ghi bước cho participant. Trả về true nếu bước đổi. */
+function recordStep(room: string, name: string, step: Step | null): boolean {
+  if (!step || !STEPS.includes(step)) return false;
+  return store.setStep(room, name, step);
+}
 
 // ---------- trạng thái kết nối ----------
 
@@ -151,6 +256,7 @@ function handle(conn: Conn, op: ClientOp) {
       Object.assign(conn, { kind: "viewer", room });
       roomViewers(room).add(conn);
       send(conn, { op: "welcome", reqId, room, self: null, unread: [], onDuty: store.isOnDuty(room) });
+      send(conn, { op: "board", room, board: boardOf(room) });
       broadcastParticipants(room); // "user" chuyển sang online
       return;
     }
@@ -186,9 +292,13 @@ function handle(conn: Conn, op: ClientOp) {
   if (op.op === "participants") {
     return reply(participantsOf(conn.room));
   }
+  if (op.op === "board") {
+    return reply(boardOf(conn.room));
+  }
 
   // Web (viewer) chỉ được gửi tin, dưới tên "user"
-  if (conn.kind === "viewer" && op.op !== "send" && op.op !== "duty") return fail("Viewer chỉ được xem, gửi tin và bật/tắt trực");
+  if (conn.kind === "viewer" && op.op !== "send" && op.op !== "duty" && op.op !== "bug_update")
+    return fail("Viewer chỉ được xem, gửi tin, bật/tắt trực và phân xử bug");
   const room = conn.room;
   const name = conn.kind === "viewer" ? HUMAN_NAME : conn.name;
   store.touch(room, name);
@@ -210,11 +320,17 @@ function handle(conn: Conn, op: ClientOp) {
       if (replyTo !== null && !store.getMessage(room, replyTo)) return fail(`Không có tin nhắn #${replyTo}`);
       const msg = store.addMessage({ room, from: name, to, type, content, replyTo });
       deliver(msg);
+      afterMessage(room, name, conn.kind === "viewer", conn.kind !== "viewer" && recordStep(room, name, parseStep(content)));
       return reply(msg);
     }
     case "status": {
-      store.setStatus(room, name, op.text?.trim() || null);
+      const text = op.text?.trim() || null;
+      store.setStatus(room, name, text);
       broadcastParticipants(room);
+      if (recordStep(room, name, op.step ?? parseStep(text))) {
+        progress(room);
+        broadcastBoard(room);
+      }
       return reply(true);
     }
     case "ack": {
@@ -230,6 +346,15 @@ function handle(conn: Conn, op: ClientOp) {
       }
       broadcastParticipants(room);
       return;
+    }
+    case "bug_create": {
+      return reply(createBug(room, name, op));
+    }
+    case "bug_update": {
+      return reply(updateBug(room, name, conn.kind === "viewer", op));
+    }
+    case "upload": {
+      return reply(saveAttachment(room, op.filename, op.data));
     }
     case "duty": {
       if (conn.kind !== "viewer") return fail("Chỉ user (web) được bật/tắt chế độ trực");
@@ -273,7 +398,7 @@ function setDuty(room: string, onDuty: boolean) {
 
 /** Lưu thông tin kickoff của phòng; send=true thì gửi tin kickoff tới @all dưới tên user */
 function kickoff(room: string, meta: KickoffMeta, sendNow: boolean): ChatMessage | null {
-  if (!meta?.ticket?.trim()) throw new Error("Thiếu mã ticket");
+  if (!meta?.ticket?.trim()) throw new OpError("Thiếu mã ticket");
   const clean: Record<string, string> = {};
   for (const [k, v] of Object.entries(meta)) if (typeof v === "string" && v.trim()) clean[k] = v.trim();
   store.setMeta(room, clean);
@@ -288,7 +413,126 @@ function kickoff(room: string, meta: KickoffMeta, sendNow: boolean): ChatMessage
     replyTo: null,
   });
   deliver(msg);
+  if (progress(room)) broadcastBoard(room);
   return msg;
+}
+
+/** Sau mỗi tin: tin của user hoặc có đổi bước = tiến triển; tin agent khác = đếm vòng lặp */
+function afterMessage(room: string, from: string, isUser: boolean, stepChanged: boolean) {
+  const changed = isUser || stepChanged ? progress(room) || stepChanged : chatter(room);
+  if (changed) broadcastBoard(room);
+}
+
+function images(urls: string[] | undefined): string {
+  const list = (urls ?? []).filter((u) => typeof u === "string" && u.startsWith("/att/"));
+  return list.length ? `\n\n${list.map((u, i) => `![ảnh ${i + 1}](${u})`).join("\n")}` : "";
+}
+
+function createBug(
+  room: string,
+  name: string,
+  op: { title: string; severity?: BugSeverity; tc?: string | null; detail: string; to?: string; attachments?: string[] },
+): { bug: Bug; message: ChatMessage } {
+  const title = op.title?.trim();
+  const detail = op.detail?.trim();
+  if (!title) throw new OpError("Thiếu tiêu đề bug");
+  if (!detail) throw new OpError("Thiếu chi tiết bug (bước tái hiện, expected, actual)");
+  const severity = op.severity ?? "med";
+  if (!BUG_SEVERITIES.includes(severity)) throw new OpError(`severity không hợp lệ: ${severity} (${BUG_SEVERITIES.join("|")})`);
+  const others = store.listParticipants(room).filter((p) => p.name !== name && p.kind === "agent");
+  const to = op.to?.trim() || others.find((p) => /^dev/i.test(p.role) || p.name === "dev")?.name || BROADCAST;
+  if (to === name) throw new OpError("Không gửi bug cho chính mình");
+  if (to !== BROADCAST && !store.getParticipant(room, to)) throw new OpError(`Không có participant "${to}"`);
+  const tc = op.tc?.trim() || null;
+  const code = store.nextBugCode(room);
+  const content = `🐞 **${code}** · ${severity}${tc ? ` · ${tc}` : ""}: **${title}**\n\n${detail}${images(op.attachments)}`;
+  const message = store.addMessage({ room, from: name, to, type: "bug_report", content, replyTo: null });
+  const bug = store.addBug({ room, code, title, severity, tc, reporter: name, assignee: to, msgId: message.id });
+  deliver(message);
+  progress(room);
+  broadcastBoard(room);
+  return { bug, message };
+}
+
+function updateBug(
+  room: string,
+  name: string,
+  isUser: boolean,
+  op: { code: string; status: BugStatus; note?: string | null; attachments?: string[] },
+): { bug: Bug; message: ChatMessage; escalated: boolean } {
+  const code = store.findBugCode(room, op.code ?? "");
+  if (!code) throw new OpError(`Không có bug "${op.code}". Có: ${store.listBugs(room).map((b) => b.code).join(", ") || "(chưa có)"}`);
+  const bug = store.getBug(room, code)!;
+  let to: BugStatus = op.status;
+  if (!BUG_STATUSES.includes(to)) throw new OpError(`status không hợp lệ: ${to} (${BUG_STATUSES.join("|")})`);
+  const note = op.note?.trim() || null;
+  const rounds = { ...bug.rounds };
+  let escalated = false;
+
+  if (!isUser) {
+    if (bug.status === "need_user")
+      throw new OpError(`${code} đang chờ user phân xử trên web. Đừng tranh luận tiếp, làm việc khác và chờ kết luận của user.`);
+    if (to === bug.status) throw new OpError(`${code} đã ở trạng thái ${to}`);
+    const allowed = BUG_TRANSITIONS[bug.status];
+    if (!allowed.includes(to))
+      throw new OpError(`${code}: không thể chuyển ${bug.status} → ${to}. Được phép: ${allowed.join(", ") || "(không)"}`);
+    if ((to === "disputed" || to === "open") && !note)
+      throw new OpError("Phản biện / giữ quan điểm phải kèm note, trích AC cụ thể");
+    // Một lượt tranh luận: DEV phản biện (→ disputed) hoặc QA giữ quan điểm (disputed → open)
+    if (to === "disputed" || (bug.status === "disputed" && to === "open")) {
+      rounds[name] = (rounds[name] ?? 0) + 1;
+      if (rounds[name] > MAX_DISPUTE_ROUNDS) {
+        rounds[name] = MAX_DISPUTE_ROUNDS;
+        to = "need_user";
+        escalated = true;
+      }
+    }
+  }
+
+  const label = (s: BugStatus) => BUG_STATUS_LABEL[s];
+  const peer = name === bug.reporter ? bug.assignee : bug.reporter;
+  const target = isUser || to === "need_user" ? BROADCAST : peer === name ? BROADCAST : peer;
+  const head = isUser
+    ? `⚖️ **${code}**: user phân xử → **${label(to)}**`
+    : `🐞 **${code}**: ${label(bug.status)} → **${label(to)}**`;
+  const type: MessageType = to === "fixed" ? "handoff" : to === "reopened" ? "bug_report" : to === "need_user" ? "question" : "chat";
+  const message = store.addMessage({
+    room,
+    from: isUser ? HUMAN_NAME : name,
+    to: target,
+    type,
+    content: `${head}${note ? `\n\n${note}` : ""}${images(op.attachments)}`,
+    replyTo: bug.msgId,
+  });
+  deliver(message);
+  store.updateBug(room, code, to, rounds);
+  store.addBugEvent(room, code, { actor: isUser ? HUMAN_NAME : name, from: bug.status, to, note, msgId: message.id });
+  if (escalated) {
+    hubMessage(
+      room,
+      `⚖️ **${code}** đã hết ${MAX_DISPUTE_ROUNDS} lượt tranh luận mỗi bên → chuyển **chờ user phân xử**. ` +
+        "DEV và QA dừng tranh luận bug này, làm tiếp việc khác. User sẽ quyết trên web, kết luận của user là cuối cùng.",
+      "question",
+      bug.msgId,
+    );
+  }
+  progress(room);
+  broadcastBoard(room);
+  return { bug: store.getBug(room, code)!, message, escalated };
+}
+
+function saveAttachment(room: string, filename: string, data: string): { url: string } {
+  const ext = extname(filename ?? "").toLowerCase();
+  if (!(ATTACHMENT_EXT as readonly string[]).includes(ext)) throw new OpError(`Chỉ nhận ảnh: ${ATTACHMENT_EXT.join(", ")}`);
+  const buf = Buffer.from(data ?? "", "base64");
+  if (!buf.length) throw new OpError("File rỗng");
+  if (buf.length > MAX_ATTACHMENT_BYTES) throw new OpError(`Ảnh quá lớn (> ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB)`);
+  const dir = join(ATT_DIR, room);
+  mkdirSync(dir, { recursive: true });
+  const base = (filename.slice(0, -ext.length).split(/[\\/]/).pop() ?? "img").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 40);
+  const file = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}-${base}${ext}`;
+  writeFileSync(join(dir, file), buf);
+  return { url: `/att/${encodeURIComponent(room)}/${file}` };
 }
 
 function broadcastRoom(room: string) {
@@ -371,6 +615,10 @@ const MIME: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
   ".ico": "image/x-icon",
   ".json": "application/json",
 };
@@ -407,6 +655,23 @@ const server = createServer((req, res) => {
     return;
   }
   if (p === "/api/rooms") return json(res, 200, store.listRooms());
+
+  const at = p.match(/^\/att\/([^/]+)\/([^/]+)$/);
+  if (at) {
+    const room = decodeURIComponent(at[1]);
+    const file = decodeURIComponent(at[2]);
+    const full = join(ATT_DIR, room, file);
+    if (!NAME_RE.test(room) || !/^[a-zA-Z0-9_.-]+$/.test(file) || !existsSync(full)) return json(res, 404, { error: "not found" });
+    res.writeHead(200, { "content-type": MIME[extname(file).toLowerCase()] ?? "application/octet-stream", "cache-control": "max-age=86400" });
+    res.end(readFileSync(full));
+    return;
+  }
+  const b = p.match(/^\/api\/rooms\/([^/]+)\/board$/);
+  if (b) {
+    const room = decodeURIComponent(b[1]);
+    if (!NAME_RE.test(room)) return json(res, 400, { error: `Tên phòng không hợp lệ: ${room}` });
+    return json(res, 200, boardOf(room));
+  }
 
   const k = p.match(/^\/api\/rooms\/([^/]+)\/(meta|kickoff|duty)$/);
   if (k) {
@@ -458,8 +723,8 @@ wss.on("connection", (ws) => {
     try {
       handle(conn, op);
     } catch (e) {
-      console.error("[hub] lỗi xử lý op", op, e);
-      send(conn, { op: "error", reqId: "reqId" in op ? op.reqId : undefined, error: String(e) });
+      if (!(e instanceof OpError)) console.error("[hub] lỗi xử lý op", op.op, e);
+      send(conn, { op: "error", reqId: "reqId" in op ? op.reqId : undefined, error: e instanceof Error ? e.message : String(e) });
     }
   });
   ws.on("close", () => {

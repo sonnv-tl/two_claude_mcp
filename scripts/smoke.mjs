@@ -1,7 +1,7 @@
 // Smoke test end-to-end: hub + 2 bridge (dev, qa) nói chuyện qua MCP tools.
 // Chạy: node scripts/smoke.mjs   (cần `npm run build` trước)
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,7 +14,7 @@ const tmp = mkdtempSync(join(tmpdir(), "tcm-smoke-"));
 const room = "smoke";
 
 const hub = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", join(root, "packages/hub/dist/index.js")], {
-  env: { ...process.env, HUB_PORT: String(port), HUB_DB: join(tmp, "hub.db") },
+  env: { ...process.env, HUB_PORT: String(port), HUB_DB: join(tmp, "hub.db"), HUB_IDLE_WARN: "4" },
   stdio: ["ignore", "pipe", "inherit"],
 });
 await new Promise((ok) => hub.stdout.on("data", (d) => String(d).includes("[hub] http") && ok()));
@@ -166,6 +166,84 @@ try {
 
   const bad2 = await web.request({ op: "status", text: "x" });
   check("viewer không được đổi status", bad2.op === "error", JSON.stringify(bad2));
+
+  // ---- Phase 4: bảng ticket (bước, bug, phân xử, ảnh, chống lặp) ----
+  const HTTP = `http://127.0.0.1:${port}`;
+  const board = async () => (await fetch(`${HTTP}/api/rooms/${room}/board`)).json();
+  const tools4 = (await qa2.client.listTools()).tools.map((t) => t.name);
+  check("bridge có report_bug, update_bug, get_board", ["report_bug", "update_bug", "get_board"].every((t) => tools4.includes(t)), tools4.join(","));
+  await qa2.call("set_status", { text: "đang test TC-04", step: "B5" });
+  await devCh.call("set_status", { text: "B3 · implement API" });
+  let b = await board();
+  const cur = (n) => b.steps.filter((s) => s.name === n).at(-1)?.step;
+  check("set_status ghi bước (step param + parse từ text)", cur("qa") === "B5" && cur("dev") === "B3", JSON.stringify(b.steps));
+  await devCh.call("send_message", { to: "qa", content: "[B4] App chạy ở http://localhost:8888" });
+  b = await board();
+  check("tin bắt đầu bằng [B4] cũng chuyển bước", cur("dev") === "B4", JSON.stringify(b.steps));
+
+  const png = join(tmp, "shot.png");
+  writeFileSync(png, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
+  const rb = await qa2.call("report_bug", {
+    title: "Nút Lưu không disable khi form lỗi",
+    severity: "high",
+    tc: "TC-04",
+    detail: "Bước: …\nExpected (AC2): disable\nActual: bấm được",
+    screenshots: [png, "khong/ton/tai.png"],
+  });
+  check("report_bug tạo BUG-01, cảnh báo ảnh không tìm thấy", rb.text.includes("BUG-01") && rb.text.includes("khong/ton/tai.png"), rb.text);
+  await sleep(200);
+  // dev chạy channel mode → tin tới qua push
+  const pushedText = () => devCh.pushed.map((p) => `[${p.meta.type}] ${p.meta.from} → ${p.meta.to}\n${p.content}`).join("\n---\n");
+  const devBug = { text: pushedText() };
+  const attUrl = devBug.text.match(/\((\/att\/[^)]+)\)/)?.[1];
+  check("dev nhận bug_report có ảnh /att/…", devBug.text.includes("[bug_report]") && devBug.text.includes("BUG-01") && !!attUrl, devBug.text);
+  const att = attUrl && (await fetch(`${HTTP}${attUrl}`));
+  check("hub phục vụ ảnh đính kèm", att?.status === 200 && att.headers.get("content-type") === "image/png", String(att?.status));
+
+  const d0 = await devCh.call("update_bug", { code: "BUG-01", status: "disputed" });
+  check("phản biện thiếu note → lỗi", d0.isError && d0.text.includes("note"), d0.text);
+  const bt = await devCh.call("update_bug", { code: "BUG-01", status: "verified" });
+  check("chuyển trạng thái sai luồng → lỗi kèm luồng hợp lệ", bt.isError && bt.text.includes("Được phép"), bt.text);
+  await devCh.call("update_bug", { code: "bug-1", status: "disputed", note: "AC2 không nói tới disable" });
+  await qa2.call("update_bug", { code: "BUG-01", status: "open", note: "AC2 dòng 3: 'không cho lưu khi lỗi'" });
+  await devCh.call("update_bug", { code: "BUG-01", status: "disputed", note: "Không cho lưu ≠ disable" });
+  await qa2.call("update_bug", { code: "BUG-01", status: "open", note: "Vẫn bấm được và lưu" });
+  const esc = await devCh.call("update_bug", { code: "BUG-01", status: "disputed", note: "lượt 3" });
+  check("lượt tranh luận thứ 3 → hub tự chuyển need_user", esc.text.includes("chờ user phân xử"), esc.text);
+  b = await board();
+  check("board: BUG-01 need_user, rounds dev 2 qa 2", b.bugs[0]?.status === "need_user" && b.bugs[0].rounds.dev === 2 && b.bugs[0].rounds.qa === 2, JSON.stringify(b.bugs[0]));
+  const qaEsc = await qa2.call("check_inbox");
+  check("agent nhận tin từ hub: dừng tranh luận", qaEsc.text.includes("hub → @all") && qaEsc.text.includes("hết 2 lượt"), qaEsc.text);
+  const locked = await qa2.call("update_bug", { code: "BUG-01", status: "rejected" });
+  check("need_user: agent không đổi được", locked.isError && locked.text.includes("chờ user"), locked.text);
+  const ps4 = await (await fetch(`${HTTP}/api/rooms/${room}/participants`)).json();
+  check("user có cảnh báo 'chờ bạn phân xử'", ps4.find((p) => p.name === "user")?.attention?.includes("BUG-01"), JSON.stringify(ps4));
+  const judge = await web.request({ op: "bug_update", code: "BUG-01", status: "open", note: "Là bug: AC2 nghĩa là phải chặn từ UI" });
+  check("user (web) phân xử need_user → open", judge.op === "result" && judge.data.bug.status === "open" && judge.data.message.from === "user", JSON.stringify(judge));
+  await sleep(200);
+  const devJudge = { text: pushedText() };
+  check("dev nhận kết luận của user", devJudge.text.includes("user phân xử") && devJudge.text.includes("AC2 nghĩa là"), devJudge.text);
+  await devCh.call("update_bug", { code: "BUG-01", status: "fixed", note: "disable nút khi form invalid" });
+  await qa2.call("update_bug", { code: "BUG-01", status: "verified" });
+  const gb = await qa2.call("get_board");
+  check("get_board: bảng markdown có tiến độ + BUG-01 Retest pass", gb.text.includes("**qa**: đang ở B5") && gb.text.includes("| BUG-01 | high | TC-04") && gb.text.includes("Retest pass"), gb.text);
+  check("web nhận op board realtime", web.inbox.some((o) => o.op === "board" && o.board.bugs.some((x) => x.status === "verified")));
+  const ps5 = await (await fetch(`${HTTP}/api/rooms/${room}/participants`)).json();
+  check("hết bug chờ phân xử → xoá cảnh báo user", ps5.find((p) => p.name === "user")?.attention === null, JSON.stringify(ps5));
+
+  // Chống lặp: HUB_IDLE_WARN=4 → 4 tin agent↔agent cảnh báo, 8 tin yêu cầu dừng, user nhắn thì reset
+  for (let n = 0; n < 4; n++) await (n % 2 ? qa2 : devCh).call("send_message", { to: n % 2 ? "dev" : "qa", content: `qua lại ${n}` });
+  b = await board();
+  check("4 tin agent↔agent không tiến triển → board.warning", b.warning?.includes("4 tin") && b.idleChatter === 4, JSON.stringify(b.warning));
+  for (let n = 4; n < 8; n++) await (n % 2 ? qa2 : devCh).call("send_message", { to: n % 2 ? "dev" : "qa", content: `qua lại ${n}` });
+  await sleep(200);
+  const hubMsgs = (await (await fetch(`${HTTP}/api/rooms/${room}/messages?limit=20`)).json()).filter((m) => m.from === "hub" && m.type !== "system");
+  check("8 tin → hub yêu cầu dừng, tóm tắt cho user", hubMsgs.some((m) => m.content.includes("Dừng trao đổi qua lại") && m.to === "@all"), JSON.stringify(hubMsgs));
+  await web.request({ op: "send", to: "@all", content: "ok để tôi xem" });
+  b = await board();
+  check("user nhắn → reset cảnh báo vòng lặp", b.warning === null && b.idleChatter === 0, JSON.stringify(b));
+  await devCh.call("check_inbox");
+  await qa2.call("check_inbox");
 
   // ---- Hooks (scripts/hook.mjs), chạy như Claude Code gọi ----
   const runHook = (event, name, input = {}, extraEnv = {}) =>

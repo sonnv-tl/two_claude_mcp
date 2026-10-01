@@ -1,7 +1,18 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ChatMessage, MessageType, ParticipantKind, RoomInfo } from "@tcm/shared";
+import type {
+  Bug,
+  BugEvent,
+  BugSeverity,
+  BugStatus,
+  ChatMessage,
+  MessageType,
+  ParticipantKind,
+  RoomInfo,
+  Step,
+  StepEvent,
+} from "@tcm/shared";
 
 export interface ParticipantRow {
   name: string;
@@ -56,7 +67,129 @@ export class Store {
     if (!cols.some((c) => c.name === "on_duty")) {
       this.db.exec("ALTER TABLE rooms ADD COLUMN on_duty INTEGER NOT NULL DEFAULT 1");
     }
-    this.db.exec("CREATE TABLE IF NOT EXISTS room_meta (room TEXT PRIMARY KEY, json TEXT NOT NULL)");
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS room_meta (room TEXT PRIMARY KEY, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS steps (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room TEXT NOT NULL, name TEXT NOT NULL, step TEXT NOT NULL, at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS bugs (
+        room TEXT NOT NULL, code TEXT NOT NULL, title TEXT NOT NULL, severity TEXT NOT NULL,
+        status TEXT NOT NULL, tc TEXT, reporter TEXT NOT NULL, assignee TEXT NOT NULL,
+        msg_id INTEGER NOT NULL, rounds TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (room, code)
+      );
+      CREATE TABLE IF NOT EXISTS bug_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room TEXT NOT NULL, code TEXT NOT NULL, actor TEXT NOT NULL,
+        from_status TEXT, to_status TEXT NOT NULL, note TEXT, msg_id INTEGER, at TEXT NOT NULL
+      );
+    `);
+  }
+
+  // ---------- bước B1–B7 ----------
+
+  /** Ghi bước mới nếu khác bước hiện tại. Trả về true nếu có thay đổi. */
+  setStep(room: string, name: string, step: Step): boolean {
+    const cur = this.db
+      .prepare("SELECT step FROM steps WHERE room = ? AND name = ? ORDER BY id DESC LIMIT 1")
+      .get(room, name) as { step: string } | undefined;
+    if (cur?.step === step) return false;
+    this.db.prepare("INSERT INTO steps (room, name, step, at) VALUES (?, ?, ?, ?)").run(room, name, step, now());
+    return true;
+  }
+
+  listSteps(room: string): StepEvent[] {
+    return this.db
+      .prepare("SELECT name, step, at FROM steps WHERE room = ? ORDER BY id")
+      .all(room) as unknown as StepEvent[];
+  }
+
+  // ---------- bug ----------
+
+  nextBugCode(room: string): string {
+    const r = this.db.prepare("SELECT COUNT(*) AS n FROM bugs WHERE room = ?").get(room) as { n: number };
+    return `BUG-${String(Number(r.n) + 1).padStart(2, "0")}`;
+  }
+
+  addBug(b: Omit<Bug, "events" | "createdAt" | "updatedAt" | "rounds" | "status"> & { room: string }): Bug {
+    const t = now();
+    this.db
+      .prepare(
+        `INSERT INTO bugs (room, code, title, severity, status, tc, reporter, assignee, msg_id, rounds, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, '{}', ?, ?)`,
+      )
+      .run(b.room, b.code, b.title, b.severity, b.tc, b.reporter, b.assignee, b.msgId, t, t);
+    this.addBugEvent(b.room, b.code, { actor: b.reporter, from: null, to: "open", note: null, msgId: b.msgId });
+    return this.getBug(b.room, b.code)!;
+  }
+
+  updateBug(room: string, code: string, status: BugStatus, rounds: Record<string, number>): void {
+    this.db
+      .prepare("UPDATE bugs SET status = ?, rounds = ?, updated_at = ? WHERE room = ? AND code = ?")
+      .run(status, JSON.stringify(rounds), now(), room, code);
+  }
+
+  addBugEvent(room: string, code: string, e: Omit<BugEvent, "at">): void {
+    this.db
+      .prepare("INSERT INTO bug_events (room, code, actor, from_status, to_status, note, msg_id, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(room, code, e.actor, e.from, e.to, e.note, e.msgId, now());
+  }
+
+  /** Tìm theo mã, không phân biệt hoa thường, chấp nhận "bug-1", "BUG-01", "1" */
+  findBugCode(room: string, code: string): string | null {
+    const n = code.trim().match(/(\d+)\s*$/);
+    if (!n) return null;
+    const c = `BUG-${String(Number(n[1])).padStart(2, "0")}`;
+    return this.getBug(room, c) ? c : null;
+  }
+
+  getBug(room: string, code: string): Bug | undefined {
+    const r = this.db.prepare(`${SELECT_BUG} WHERE room = ? AND code = ?`).get(room, code) as unknown as BugDbRow | undefined;
+    return r && this.toBug(r);
+  }
+
+  listBugs(room: string): Bug[] {
+    return (this.db.prepare(`${SELECT_BUG} WHERE room = ? ORDER BY code`).all(room) as unknown as BugDbRow[]).map((r) =>
+      this.toBug(r),
+    );
+  }
+
+  private toBug(r: BugDbRow): Bug {
+    const events = (
+      this.db
+        .prepare("SELECT actor, from_status, to_status, note, msg_id, at FROM bug_events WHERE room = ? AND code = ? ORDER BY id")
+        .all(r.room, r.code) as unknown as {
+        actor: string;
+        from_status: BugStatus | null;
+        to_status: BugStatus;
+        note: string | null;
+        msg_id: number | null;
+        at: string;
+      }[]
+    ).map((e) => ({
+      actor: e.actor,
+      from: e.from_status,
+      to: e.to_status,
+      note: e.note,
+      msgId: e.msg_id === null ? null : Number(e.msg_id),
+      at: e.at,
+    }));
+    return {
+      code: r.code,
+      title: r.title,
+      severity: r.severity,
+      status: r.status,
+      tc: r.tc,
+      reporter: r.reporter,
+      assignee: r.assignee,
+      msgId: Number(r.msg_id),
+      rounds: JSON.parse(r.rounds),
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      events,
+    };
   }
 
   getMeta(room: string): Record<string, unknown> | null {
@@ -211,7 +344,25 @@ export class Store {
   }
 }
 
-const SELECT_MSG = "SELECT id, room, from_name, to_name, type, content, reply_to, created_at FROM messages";
+const SELECT_BUG =
+  "SELECT room, code, title, severity, status, tc, reporter, assignee, msg_id, rounds, created_at, updated_at FROM bugs";
+
+interface BugDbRow {
+  room: string;
+  code: string;
+  title: string;
+  severity: BugSeverity;
+  status: BugStatus;
+  tc: string | null;
+  reporter: string;
+  assignee: string;
+  msg_id: number;
+  rounds: string;
+  created_at: string;
+  updated_at: string;
+}
+
+const SELECT_MSG ="SELECT id, room, from_name, to_name, type, content, reply_to, created_at FROM messages";
 
 interface MessageDbRow {
   id: number;
