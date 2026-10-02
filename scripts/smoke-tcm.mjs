@@ -14,9 +14,10 @@ const env = { ...process.env, HUB_PORT: String(port), HUB_DB: join(tmp, "hub.db"
 const HUB = `http://127.0.0.1:${port}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function tcm(...args) {
+const tcm = (...args) => tcmIn(repo, ...args);
+function tcmIn(dir, ...args) {
   return new Promise((ok) => {
-    const p = spawn(process.execPath, [join(root, "scripts/tcm.mjs"), ...args, "--cwd", repo], { env });
+    const p = spawn(process.execPath, [join(root, "scripts/tcm.mjs"), ...args, "--cwd", dir], { env });
     let out = "";
     p.stdout.on("data", (d) => (out += d));
     p.stderr.on("data", (d) => (out += d));
@@ -99,6 +100,26 @@ try {
   const sp = await tcm("stop", "TL-1");
   const rooms = await (await fetch(`${HUB}/api/rooms`)).json();
   check("tcm stop tắt chế độ trực", sp.code === 0 && rooms.find((r) => r.name === "TL-1")?.onDuty === false, sp.out + JSON.stringify(rooms));
+
+  // ---- Phase 5: close, resume ----
+  check("start lưu đường dẫn repo vào meta", meta.repoDir === resolve(repo), JSON.stringify(meta));
+  await fetch(`${HUB}/api/rooms/TL-1/report`, { method: "POST", body: JSON.stringify({ content: "## Tổng kết TL-1\nĐạt" }) });
+  const cl = await tcm("close", "TL-1");
+  check("tcm close: đóng ticket, báo có báo cáo B7", cl.code === 0 && cl.out.includes("đã đóng ticket") && cl.out.includes("phiên bản 1"), cl.out);
+  const st2 = await tcm("status");
+  check("tcm status hiện phòng đã đóng", /#TL-1 .* đóng/.test(st2.out), st2.out);
+
+  const rs = await tcmIn(tmp, "resume", "TL-1", "--dry-run", "--no-open");
+  check("tcm resume ngoài repo → dùng repo đã lưu", rs.code === 0 && rs.out.includes("repo đã lưu"), rs.out);
+  check("resume in tóm tắt phòng (trạng thái đóng, báo cáo)", rs.out.includes("Tóm tắt phòng") && rs.out.includes("ĐÃ ĐÓNG") && rs.out.includes("Phiên bản 1"), rs.out);
+  check("resume mở lại ticket + 2 pane chạy -Resume", rs.out.includes("mở lại") && (rs.out.match(/-Resume/g) || []).length === 2 && rs.out.includes(`-d ${repo}`), rs.out);
+  const r1 = (await (await fetch(`${HUB}/api/rooms`)).json()).find((r) => r.name === "TL-1");
+  check("sau resume: hết closedAt, bật trực", r1.closedAt === null && r1.onDuty === true, JSON.stringify(r1));
+  const nope = await tcm("resume", "KHONG-CO");
+  check("resume phòng không tồn tại → gợi ý tcm start", nope.code === 1 && nope.out.includes("tcm start KHONG-CO"), nope.out);
+  const vs = await tcm("vscode");
+  const tasks = JSON.parse(readFileSync(join(repo, ".vscode", "tasks.json"), "utf8")).tasks;
+  check("tcm vscode có task resume ticket (DEV/QA chạy -Resume)", vs.code === 0 && tasks.some((t) => t.label === "tcm: resume ticket") && tasks.find((t) => t.label === "tcm: DEV (resume)")?.command.includes("-Resume") && !tasks.find((t) => t.label === "tcm: DEV").command.includes("-Resume"), JSON.stringify(tasks.map((t) => t.label)));
 
   const bad = await tcm("start", "bad room!");
   check("tên phòng không hợp lệ → báo lỗi", bad.code === 1 && bad.out.includes("không hợp lệ"), bad.out);

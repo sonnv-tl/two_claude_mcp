@@ -232,3 +232,17 @@ button.link { background: none; border: 0; padding: 0 4px; color: var(--c-dev); 
 .md .shot img { max-width: 360px; max-height: 240px; border: 1px solid var(--border); border-radius: 6px; display: block; }
 .msg.flash { outline: 2px solid #f59e0b; transition: outline-color 1s; }
 @media (max-width: 1200px) { .stepper .step .muted { display: none; } }
+
+/* Phase 5: báo cáo B7, đóng ticket */
+.type-report { color: #0d9488; border-color: #0d948855; font-weight: 600; }
+.msg:has(.type-report) { border-left-width: 5px; background: color-mix(in srgb, #0d9488 6%, var(--panel)); }
+.room.closed { opacity: 0.6; }
+.duty.report-ready { color: #0d9488; border-color: #0d948888; font-weight: 600; }
+.report-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.report-tools a.link { color: var(--c-dev); padding: 0 4px; }
+.report-edit {
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; color: inherit; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-height: 360px; resize: vertical;
+}
+.report-view { min-height: 200px; }
+.notice { color: var(--c-user); white-space: pre-wrap; word-break: break-all; }

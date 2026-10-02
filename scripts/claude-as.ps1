@@ -9,6 +9,7 @@
 #   -NoHooks   : không nạp hooks/team-settings.json (Stop hook giữ trực, báo "chờ duyệt quyền" lên web)
 #   -Model sonnet / -PermissionMode acceptEdits / -Extra @("--foo","bar")
 #   -SkipPermissions : chạy với --dangerously-skip-permissions (không hỏi duyệt quyền)
+#   -Resume    : vào lại ticket đang làm dở (tcm resume): prompt yêu cầu đọc get_summary rồi làm tiếp
 param(
   [Parameter(Mandatory = $true)][string]$Role,
   [string]$Name = $Role,
@@ -19,6 +20,7 @@ param(
   [switch]$NoBrowser,
   [switch]$NoHooks,
   [switch]$SkipPermissions,
+  [switch]$Resume,
   [string]$Model = "",
   [string]$PermissionMode = "",
   [string[]]$Extra = @()
@@ -31,6 +33,14 @@ $env:HUB_URL = $HubUrl
 # Cho phép wait_for_messages chờ lâu mà không bị Claude Code cắt (ms)
 if (-not $env:MCP_TOOL_TIMEOUT) { $env:MCP_TOOL_TIMEOUT = "900000" }
 
+if ($Resume) {
+  $intro = "Bạn là $Name trong phòng '$Room' của team hub. Bạn đang VÀO LẠI ticket đã làm dở (session trước đã đóng, context cũ không còn). " +
+    "Gọi get_summary để đọc tóm tắt phòng (bước, bug, việc của bạn, tin gần đây), đọc lại file plan / test case / kết quả test nếu cần, " +
+    "rồi gửi user 1 tin ngắn: bạn đang ở bước nào và sẽ làm tiếp gì. Sau đó làm tiếp theo vai trò của bạn"
+} else {
+  $intro = "Bạn là $Name trong phòng '$Room' của team hub. Gọi get_summary để nắm bối cảnh, sau đó làm việc theo vai trò của bạn"
+}
+
 $claudeArgs = @()
 if (-not $NoHooks) { $claudeArgs += @("--settings", (Join-Path $PSScriptRoot "..\hooks\team-settings.json")) }
 if ($Model) { $claudeArgs += @("--model", $Model) }
@@ -39,12 +49,10 @@ if ($SkipPermissions) { $claudeArgs += "--dangerously-skip-permissions" }
 if ($Channel) {
   $env:HUB_CHANNEL = "1"
   $claudeArgs += @("--dangerously-load-development-channels", "server:team-hub")
-  $defaultPrompt = "Bạn là $Name trong phòng '$Room' của team hub. Gọi list_participants và get_history để nắm bối cảnh, " +
-    "sau đó làm việc theo vai trò của bạn. Nếu chưa có việc thì kết thúc lượt, tin nhắn mới sẽ được đẩy tới."
+  $defaultPrompt = "$intro. Nếu chưa có việc thì kết thúc lượt, tin nhắn mới sẽ được đẩy tới."
 } else {
   $env:HUB_CHANNEL = "0"
-  $defaultPrompt = "Bạn là $Name trong phòng '$Room' của team hub. Gọi list_participants và get_history để nắm bối cảnh, " +
-    "sau đó vào CHẾ ĐỘ TRỰC: gọi wait_for_messages để chờ việc, xử lý xong mỗi việc thì lại gọi wait_for_messages, " +
+  $defaultPrompt = "$intro, rồi vào CHẾ ĐỘ TRỰC: gọi wait_for_messages để chờ việc, xử lý xong mỗi việc thì lại gọi wait_for_messages, " +
     "hết timeout thì gọi lại. Không kết thúc lượt trừ khi user bảo dừng."
 }
 if ($Role -eq "qa" -and -not $NoBrowser) {

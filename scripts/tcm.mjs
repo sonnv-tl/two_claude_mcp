@@ -11,6 +11,10 @@
 //       --no-open        không mở web
 //       --no-terminal    không mở terminal (tự mở bằng claude-as)
 //       --dry-run        chỉ in lệnh wt.exe, không mở terminal
+//   tcm resume <ROOM> [options]   vào lại ticket làm dở: in tóm tắt phòng → mở lại ticket nếu đã đóng → mở DEV | QA
+//                                 với prompt "đọc get_summary rồi làm tiếp". Chạy được từ bất kỳ đâu (dùng repo tcm start đã lưu).
+//       --no-open / --no-terminal / --dry-run   như tcm start
+//   tcm close <ROOM>              đóng ticket (giữ báo cáo B7 hiện có, tắt trực, agent kết thúc lượt)
 //   tcm vscode                    thêm task vào .vscode/tasks.json: 2 terminal DEV | QA chia đôi ngay trong VS Code
 //   tcm stop <ROOM>               tắt chế độ trực (agent kết thúc lượt khi xong việc)
 //   tcm status                    hub + danh sách phòng
@@ -42,10 +46,10 @@ for (let i = 0; i < argv.length; i++) {
   } else pos.push(a);
 }
 const [cmd, arg1] = pos;
-const cwd = typeof opts.cwd === "string" ? opts.cwd : process.cwd();
+let cwd = typeof opts.cwd === "string" ? opts.cwd : process.cwd();
 /** Chạy từ WSL: đường dẫn Linux của repo + tên distro (do wrapper bash truyền vào) */
-const wslCwd = typeof opts["wsl-cwd"] === "string" ? opts["wsl-cwd"] : null;
-const distro = typeof opts.distro === "string" ? opts.distro : "Ubuntu";
+let wslCwd = typeof opts["wsl-cwd"] === "string" ? opts["wsl-cwd"] : null;
+let distro = typeof opts.distro === "string" ? opts.distro : "Ubuntu";
 
 const die = (msg) => {
   console.error(`✘ ${msg}`);
@@ -121,15 +125,23 @@ async function ensureHub() {
   die(`không khởi động được hub. Xem log: ${join(ROOT, "data/hub.log")}`);
 }
 
-async function api(path, body) {
+async function api(path, body, { text = false } = {}) {
   const r = await fetch(`${HUB}${path}`, {
     method: body ? "POST" : "GET",
     headers: { "content-type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
+  if (text && r.ok) return r.text();
   const data = await r.json().catch(() => ({}));
   if (!r.ok) die(data.error ?? `${path}: HTTP ${r.status}`);
   return data;
+}
+
+const roomPath = (room, sub) => `/api/rooms/${encodeURIComponent(room)}/${sub}`;
+
+/** Repo đích, lưu vào meta của phòng để tcm resume mở lại đúng chỗ (chạy được từ bất kỳ đâu) */
+function repoInfo() {
+  return { repoDir: resolve(cwd), ...(wslCwd ? { wslCwd, distro } : {}) };
 }
 
 // ---------- terminal ----------
@@ -138,10 +150,11 @@ function toWslPath(winPath) {
   return m ? `/mnt/${m[1].toLowerCase()}/${m[2]}` : winPath;
 }
 
-function agentCmd(role, room, agentCfg) {
+function agentCmd(role, room, agentCfg, { resume = false } = {}) {
   const a = agentCfg ?? {};
   if (wslCwd) {
     const env = [];
+    if (resume) env.push("RESUME=1");
     if (role === "qa" && a.browser === false) env.push("NO_BROWSER=1");
     if (a.model) env.push(`MODEL=${a.model}`);
     if (a.permissionMode) env.push(`PERMISSION_MODE=${a.permissionMode}`);
@@ -158,17 +171,18 @@ function agentCmd(role, room, agentCfg) {
   if (a.permissionMode) ps.push("-PermissionMode", a.permissionMode);
   if (a.skipPermissions !== false) ps.push("-SkipPermissions");
   if (a.channel) ps.push("-Channel");
+  if (resume) ps.push("-Resume");
   return ps;
 }
 
-function openTerminals(room, cfg) {
+function openTerminals(room, cfg, { resume = false } = {}) {
   const agents = cfg.agents ?? {};
   const d = wslCwd ? [] : ["-d", cwd];
   const args = [
     "-w", `tcm-${room}`,
-    "new-tab", "--title", `DEV · ${room}`, ...d, ...agentCmd("dev", room, agents.dev),
+    "new-tab", "--title", `DEV · ${room}`, ...d, ...agentCmd("dev", room, agents.dev, { resume }),
     ";",
-    "split-pane", "-V", "--title", `QA · ${room}`, ...d, ...agentCmd("qa", room, agents.qa),
+    "split-pane", "-V", "--title", `QA · ${room}`, ...d, ...agentCmd("qa", room, agents.qa, { resume }),
   ];
   if (opts["dry-run"]) {
     console.log("[dry-run] wt.exe " + args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" "));
@@ -292,6 +306,7 @@ async function cmdStart() {
     testcaseDir: cfg.paths?.testcases,
     runsDir: cfg.paths?.runs,
     notes: typeof opts.notes === "string" ? opts.notes : cfg.notes,
+    ...repoInfo(),
   };
   ensureExclude(personalEntries(cfg), { quiet: true });
   if (!meta.testAccount) console.log("… chưa có tài khoản test (thêm vào .team-hub.local.json hoặc --account)");
@@ -299,9 +314,14 @@ async function cmdStart() {
   await ensureHub();
   const rooms = await api("/api/rooms");
   const existing = rooms.find((r) => r.name === room);
-  if (existing?.messageCount) console.log(`… phòng "${room}" đã có ${existing.messageCount} tin. Muốn làm lại từ đầu thì dùng --room ${room}-2`);
-  await api(`/api/rooms/${encodeURIComponent(room)}/meta`, meta);
-  await api(`/api/rooms/${encodeURIComponent(room)}/duty`, { onDuty: true });
+  if (existing?.messageCount)
+    console.log(`… phòng "${room}" đã có ${existing.messageCount} tin. Vào lại việc đang dở: tcm resume ${room}. Làm lại từ đầu: --room ${room}-2`);
+  await api(roomPath(room, "meta"), meta);
+  if (existing?.closedAt) {
+    await api(roomPath(room, "reopen"), {});
+    console.log(`✔ phòng "${room}" đã đóng trước đó → mở lại`);
+  }
+  await api(roomPath(room, "duty"), { onDuty: true });
 
   if (opts["save-ticket"]) {
     mkdirSync(join(cwd, ".vscode"), { recursive: true });
@@ -351,12 +371,14 @@ async function cmdVscode() {
   const T = "${input:tcmTicket}";
   const F = "${input:tcmFigma}";
   const pres = (reveal) => ({ group: "tcm", panel: "dedicated", reveal, focus: false, showReuseMessage: false, clear: true });
-  let dev, qa, kick, shell;
+  // agent(role, resume): lệnh mở 1 session; kick(resume): tcm start/resume (hỏi mã ticket 1 lần, lưu vào .vscode/.tcm-ticket)
+  let agent, kick, shell;
   if (wslCwd) {
     // VS Code mở repo qua Remote-WSL → task chạy bằng bash trong WSL
-    const envOf = (role) => {
+    const envOf = (role, resume) => {
       const a = agents[role] ?? {};
       const e = [];
+      if (resume) e.push("RESUME=1");
       if (role === "qa" && a.browser === false) e.push("NO_BROWSER=1");
       if (a.model) e.push(`MODEL=${a.model}`);
       if (a.permissionMode) e.push(`PERMISSION_MODE=${a.permissionMode}`);
@@ -367,29 +389,39 @@ async function cmdVscode() {
     const base = toWslPath(ROOT);
     // Mã ticket chỉ hỏi 1 lần (ở task kickoff), DEV/QA đọc lại từ .vscode/.tcm-ticket
     const room = `"$(cat .vscode/.tcm-ticket)"`;
-    dev = `${envOf("dev")}bash ${base}/scripts/claude-as.sh dev ${room}`;
-    qa = `${envOf("qa")}bash ${base}/scripts/claude-as.sh qa ${room}`;
-    kick = `bash ${base}/scripts/tcm start ${T} --figma "${F}" --no-terminal --save-ticket`;
+    agent = (role, resume) => `${envOf(role, resume)}bash ${base}/scripts/claude-as.sh ${role} ${room}`;
+    kick = (resume) =>
+      resume ? `bash ${base}/scripts/tcm resume ${T} --no-terminal --save-ticket` : `bash ${base}/scripts/tcm start ${T} --figma "${F}" --no-terminal --save-ticket`;
     shell = { executable: "bash", args: ["-c"] };
   } else {
     const ROOM = "__ROOM__";
-    const room = "(Get-Content .vscode\\.tcm-ticket)";
-    const ps = (role) =>
-      agentCmd(role, ROOM, agents[role]).slice(1).filter((a) => a !== "-NoExit")
+    const room = "(Get-Content .vscode\.tcm-ticket)";
+    agent = (role, resume) =>
+      "powershell.exe " +
+      agentCmd(role, ROOM, agents[role], { resume }).slice(1).filter((a) => a !== "-NoExit")
         .map((a) => (a === ROOM ? room : /\s/.test(a) ? `'${a}'` : a)).join(" ");
-    dev = `powershell.exe ${ps("dev")}`;
-    qa = `powershell.exe ${ps("qa")}`;
-    kick = `& node '${join(ROOT, "scripts", "tcm.mjs")}' start ${T} --figma '${F}' --no-terminal --save-ticket`;
+    const tcmJs = join(ROOT, "scripts", "tcm.mjs");
+    kick = (resume) =>
+      resume ? `& node '${tcmJs}' resume ${T} --no-terminal --save-ticket` : `& node '${tcmJs}' start ${T} --figma '${F}' --no-terminal --save-ticket`;
     shell = { executable: "powershell.exe", args: ["-NoProfile", "-Command"] };
   }
   const options = { shell };
+  const bg = (label, command) => ({ label, type: "shell", command, options, isBackground: true, problemMatcher: [], presentation: pres("always") });
+  // Terminal kickoff/resume tự đóng khi chạy xong
+  const once = (label, command) => ({ label, type: "shell", command, options, problemMatcher: [], presentation: { ...pres("never"), group: "tcm-kickoff", close: true } });
   const tasks = [
-    { label: "tcm: DEV", type: "shell", command: dev, options, isBackground: true, problemMatcher: [], presentation: pres("always") },
-    { label: "tcm: QA", type: "shell", command: qa, options, isBackground: true, problemMatcher: [], presentation: pres("always") },
-    // Hỏi mã ticket (1 lần), lưu thông tin kickoff, mở web, gửi kickoff ngay. Terminal tự đóng.
-    { label: "tcm: kickoff", type: "shell", command: kick, options, problemMatcher: [], presentation: { ...pres("never"), group: "tcm-kickoff", close: true } },
+    bg("tcm: DEV", agent("dev", false)),
+    bg("tcm: QA", agent("qa", false)),
+    // Hỏi mã ticket (1 lần), lưu thông tin kickoff, mở web, gửi kickoff ngay
+    once("tcm: kickoff", kick(false)),
     { label: "tcm: agents", dependsOn: ["tcm: DEV", "tcm: QA"], dependsOrder: "parallel", problemMatcher: [] },
     { label: "tcm: start ticket", dependsOn: ["tcm: kickoff", "tcm: agents"], dependsOrder: "sequence", problemMatcher: [] },
+    // Vào lại ticket làm dở: mở lại phòng, DEV/QA đọc get_summary rồi làm tiếp
+    bg("tcm: DEV (resume)", agent("dev", true)),
+    bg("tcm: QA (resume)", agent("qa", true)),
+    once("tcm: resume", kick(true)),
+    { label: "tcm: agents (resume)", dependsOn: ["tcm: DEV (resume)", "tcm: QA (resume)"], dependsOrder: "parallel", problemMatcher: [] },
+    { label: "tcm: resume ticket", dependsOn: ["tcm: resume", "tcm: agents (resume)"], dependsOrder: "sequence", problemMatcher: [] },
   ];
   const inputs = [
     { id: "tcmTicket", type: "promptString", description: "Mã ticket (cũng là tên phòng), vd. TLPORTAL-10182" },
@@ -419,8 +451,58 @@ async function cmdVscode() {
   writeFileSync(file, JSON.stringify(doc, null, 2) + "\n");
   console.log(`✔ ghi ${file}`);
   ensureExclude([".vscode/tasks.json", ".vscode/.tcm-ticket"]);
-  console.log(`  VS Code: Ctrl+Shift+P → "Tasks: Run Task" → "tcm: start ticket" → nhập mã ticket.`);
+  console.log(`  VS Code: Ctrl+Shift+P → "Tasks: Run Task" → "tcm: start ticket" → nhập mã ticket. Vào lại ticket làm dở: "tcm: resume ticket".`);
   console.log(`  2 terminal DEV | QA mở chia đôi trong panel, web mở ở trình duyệt, kickoff gửi ngay, agent nhận khi vào phòng.`);
+}
+
+async function cmdResume() {
+  const room = arg1;
+  if (!room) die("cách dùng: tcm resume <ROOM> [--no-open] [--no-terminal] [--dry-run]");
+  if (!NAME_RE.test(room)) die(`tên phòng không hợp lệ: ${room}`);
+  await ensureHub();
+  const info = (await api("/api/rooms")).find((r) => r.name === room);
+  if (!info) die(`không có phòng "${room}". Mở ticket mới: tcm start ${room}`);
+  const meta = await api(roomPath(room, "meta"));
+
+  let { dir, cfg } = loadConfig();
+  if (!dir && meta.repoDir) {
+    // Không đứng trong repo: dùng repo tcm start đã lưu
+    cwd = meta.repoDir;
+    wslCwd = meta.wslCwd || null;
+    distro = meta.distro || distro;
+    ({ dir, cfg } = loadConfig());
+    console.log(`✔ repo đã lưu: ${wslCwd ?? cwd}`);
+  } else if (dir) {
+    console.log(`✔ config: ${dir}`);
+    if (!meta.repoDir) await api(roomPath(room, "meta"), { ...meta, ticket: meta.ticket || room, ...repoInfo() });
+  } else console.log("… không thấy .team-hub.json và phòng chưa lưu repo: terminal mở ở thư mục hiện tại.");
+
+  console.log(`\n${await api(roomPath(room, "summary"), undefined, { text: true })}\n`);
+
+  const stale = (await api(roomPath(room, "participants"))).filter((p) => p.kind === "agent" && p.online).map((p) => p.name);
+  if (stale.length) console.log(`… ${stale.join(", ")} vẫn đang online: session cũ sẽ bị session mới cùng tên thay thế.`);
+  if (info.closedAt) {
+    await api(roomPath(room, "reopen"), {});
+    console.log("✔ ticket đã đóng → mở lại, bật trực");
+  } else await api(roomPath(room, "duty"), { onDuty: true });
+
+  if (opts["save-ticket"]) {
+    mkdirSync(join(cwd, ".vscode"), { recursive: true });
+    writeFileSync(join(cwd, ".vscode", ".tcm-ticket"), room);
+  }
+  if (!opts["no-terminal"]) openTerminals(room, cfg, { resume: true });
+  if (!opts["no-open"]) openWeb(room);
+  console.log(`✔ DEV/QA vào lại sẽ đọc get_summary, báo bạn đang ở đâu rồi làm tiếp. Theo dõi: ${HUB}/#/${room}`);
+}
+
+async function cmdClose() {
+  const room = arg1;
+  if (!room) die("cách dùng: tcm close <ROOM>");
+  if (!(await hubUp())) die("hub không chạy");
+  const board = await api(roomPath(room, "close"), {});
+  console.log(`✔ phòng "${room}": đã đóng ticket, tắt trực. Agent sẽ kết thúc lượt.`);
+  if (!board.report) console.log("⚠ chưa có báo cáo B7 (agent gửi bằng submit_report, hoặc viết trên web: nút 🏁)");
+  else console.log(`  báo cáo B7: phiên bản ${board.reportVersions} (${board.report.author}) · ${HUB}${roomPath(room, "report.md")}`);
 }
 
 async function cmdStop() {
@@ -439,11 +521,12 @@ async function cmdStatus() {
   for (const r of await api("/api/rooms")) {
     const ps = await api(`/api/rooms/${encodeURIComponent(r.name)}/participants`);
     const who = ps.filter((p) => p.kind === "agent").map((p) => `${p.name}${p.online ? (p.waiting ? "·chờ" : "·làm") : "·off"}${p.attention ? "⚠" : ""}`);
-    console.log(`  #${r.name.padEnd(24)} ${String(r.messageCount).padStart(4)} tin  ${r.onDuty ? "trực" : "nghỉ"}  ${who.join(" ")}`);
+    const state = r.closedAt ? "đóng" : r.onDuty ? "trực" : "nghỉ";
+    console.log(`  #${r.name.padEnd(24)} ${String(r.messageCount).padStart(4)} tin  ${state}  ${who.join(" ")}`);
   }
 }
 
-const commands = { init: cmdInit, start: cmdStart, stop: cmdStop, status: cmdStatus, vscode: cmdVscode };
+const commands = { init: cmdInit, start: cmdStart, resume: cmdResume, close: cmdClose, stop: cmdStop, status: cmdStatus, vscode: cmdVscode };
 if (!commands[cmd]) {
   console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1).filter((l, i, arr) => arr.slice(0, i + 1).every((x) => x.startsWith("//"))).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
   process.exit(cmd ? 1 : 0);

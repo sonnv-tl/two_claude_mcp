@@ -18,7 +18,7 @@ Gửi tay thì thay mã ticket, link Figma và tài khoản test:
 
 - **@dev**: B1 tự xem design + viết plan `docs/plan/PROJ-123.md` → B2 review test case của QA → B3 implement + unit test → B4 chạy app, handoff URL cho QA → B5–B6 fix hoặc phản biện bug.
 - **@qa**: B1 tự xem design + viết test case `qa/testcases/PROJ-123.md` → B2 review plan của DEV → B3 soát code, báo lệch AC sớm → B5–B6 test trên browser (so UI với design trên Figma), ghi kết quả `qa/runs/PROJ-123.md`, báo bug, retest.
-- **B7**: QA soạn nháp tổng kết, DEV bổ sung phần kỹ thuật, rồi gửi tôi **1 báo cáo chung**.
+- **B7**: QA soạn nháp tổng kết, DEV bổ sung phần kỹ thuật, rồi QA gửi tôi **1 báo cáo chung** bằng `submit_report`.
 
 Luật: mỗi vấn đề tranh luận tối đa 2 lượt mỗi bên, sau đó hỏi tôi phân xử. Mọi lý lẽ phải trích AC. Không sửa ticket trên Backlog.
 

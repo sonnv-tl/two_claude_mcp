@@ -192,7 +192,7 @@ server.registerTool(
       to: z.string().describe('Tên người nhận, hoặc "@all"'),
       content: z.string().min(1).describe("Nội dung (markdown). Kèm file path, tên hàm, bước tái hiện khi cần."),
       type: z
-        .enum(MESSAGE_TYPES.filter((t) => t !== "system") as [string, ...string[]])
+        .enum(MESSAGE_TYPES.filter((t) => t !== "system" && t !== "report") as [string, ...string[]])
         .optional()
         .describe("Loại tin, mặc định chat"),
       reply_to: z.number().int().optional().describe("id tin nhắn đang trả lời"),
@@ -233,7 +233,9 @@ server.registerTool(
       const secs = timeout_seconds ?? 300;
       const offDuty = () =>
         result(
-          "User đã TẮT chế độ trực trên web. Hãy hoàn tất việc đang làm dở (nếu có), gửi user tóm tắt ngắn nếu cần, rồi KẾT THÚC LƯỢT (không gọi wait_for_messages nữa).",
+          hub.ticketClosed
+            ? "User đã ĐÓNG ticket. Dừng mọi việc, không gửi thêm tin, KẾT THÚC LƯỢT (không gọi wait_for_messages nữa)."
+            : "User đã TẮT chế độ trực trên web. Hãy hoàn tất việc đang làm dở (nếu có), gửi user tóm tắt ngắn nếu cần, rồi KẾT THÚC LƯỢT (không gọi wait_for_messages nữa).",
         );
       if (!hub.onDuty && !inbox.length) return offDuty();
       hub.setWaiting(true);
@@ -380,6 +382,39 @@ server.registerTool(
     inputSchema: {},
   },
   () => guard(async () => result(boardMarkdown(await hub.board()))),
+);
+
+server.registerTool(
+  "get_summary",
+  {
+    title: "Tóm tắt phòng",
+    description:
+      "Tóm tắt phòng cho người mới vào hoặc vào lại: thông tin ticket (Figma, tài khoản test, đường dẫn file), mỗi người đang ở bước nào, " +
+      "bảng bug, việc tồn đọng của BẠN, câu hỏi đang chờ user, trạng thái báo cáo B7, 15 tin gần nhất. Gọi đầu tiên khi vào phòng hoặc sau khi context bị nén.",
+    inputSchema: {},
+  },
+  () => guard(async () => result(await hub.summary())),
+);
+
+server.registerTool(
+  "submit_report",
+  {
+    title: "Gửi báo cáo tổng kết (B7)",
+    description:
+      "B7: gửi user báo cáo tổng kết CHUNG của ticket (đã thống nhất giữa DEV và QA, theo mẫu báo cáo trong hướng dẫn). " +
+      "Hub lưu làm báo cáo của ticket: user duyệt, sửa và đóng ticket trên web. Gửi lại = phiên bản mới thay bản cũ. " +
+      "Chỉ một người gửi (mặc định QA). KHÔNG đăng báo cáo lên Backlog.",
+    inputSchema: {
+      content: z.string().min(20).describe("Báo cáo đầy đủ (markdown)"),
+      screenshots: screenshotsSchema,
+    },
+  },
+  ({ content, screenshots }) =>
+    guard(async () => {
+      const { urls, warnings } = await uploadAll(screenshots);
+      const { message, version } = await hub.submitReport(content, urls);
+      return result(`Đã gửi báo cáo B7 cho user (#${message.id}, phiên bản ${version}). Chờ user duyệt.${warnings}`);
+    }),
 );
 
 /** Tìm file ảnh agent đưa: tương đối theo repo, tuyệt đối, hoặc path Linux khi repo nằm trong WSL */

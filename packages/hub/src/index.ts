@@ -32,6 +32,9 @@ import {
   MAX_ATTACHMENT_BYTES,
   MAX_DISPUTE_ROUNDS,
   STEPS,
+  STEP_LABEL,
+  boardMarkdown,
+  stepSummary,
   parseStep,
   type Board,
   type Bug,
@@ -87,6 +90,9 @@ function boardOf(room: string): Board {
   return {
     steps: store.listSteps(room),
     bugs: store.listBugs(room),
+    report: store.latestReport(room),
+    reportVersions: store.countReports(room),
+    closedAt: store.closedAt(room),
     idleChatter: r.idleChatter,
     warning:
       r.warned > 0
@@ -101,7 +107,11 @@ function broadcastBoard(room: string) {
   for (const c of roomViewers(room)) send(c, op);
   // Cảnh báo cho user (web kêu + thông báo desktop khi text đổi)
   const waitUser = board.bugs.filter((b) => b.status === "need_user").map((b) => b.code);
-  const text = [waitUser.length ? `⚖️ ${waitUser.join(", ")} chờ bạn phân xử` : null, board.warning && "🔁 Agent có thể đang lặp"]
+  const text = [
+    waitUser.length ? `⚖️ ${waitUser.join(", ")} chờ bạn phân xử` : null,
+    board.warning && "🔁 Agent có thể đang lặp",
+    board.report && !board.closedAt && board.report.author !== HUMAN_NAME && "📄 Báo cáo B7 chờ bạn duyệt",
+  ]
     .filter(Boolean)
     .join(" · ");
   setAttention(room, HUMAN_NAME, text || null);
@@ -255,7 +265,7 @@ function handle(conn: Conn, op: ClientOp) {
     if (op.kind === "viewer") {
       Object.assign(conn, { kind: "viewer", room });
       roomViewers(room).add(conn);
-      send(conn, { op: "welcome", reqId, room, self: null, unread: [], onDuty: store.isOnDuty(room) });
+      send(conn, { op: "welcome", reqId, room, self: null, unread: [], onDuty: store.isOnDuty(room), closed: !!store.closedAt(room) });
       send(conn, { op: "board", room, board: boardOf(room) });
       broadcastParticipants(room); // "user" chuyển sang online
       return;
@@ -278,7 +288,7 @@ function handle(conn: Conn, op: ClientOp) {
     roomOnline(room).set(name, conn);
     const unread = store.unreadFor(room, name, row.lastReadId);
     Object.assign(rt(room, name), { waiting: false, attention: null, lastBlockAt: 0 });
-    send(conn, { op: "welcome", reqId, room, self: toParticipant(room, row), unread, onDuty: store.isOnDuty(room) });
+    send(conn, { op: "welcome", reqId, room, self: toParticipant(room, row), unread, onDuty: store.isOnDuty(room), closed: !!store.closedAt(room) });
     broadcastParticipants(room);
     if (!existing) systemMessage(room, `${name} (${op.role || op.kind}) đã tham gia phòng`);
     return;
@@ -294,6 +304,9 @@ function handle(conn: Conn, op: ClientOp) {
   }
   if (op.op === "board") {
     return reply(boardOf(conn.room));
+  }
+  if (op.op === "summary") {
+    return reply(roomSummary(conn.room, conn.kind === "viewer" ? HUMAN_NAME : conn.name));
   }
 
   // Web (viewer) chỉ được gửi tin, dưới tên "user"
@@ -316,6 +329,7 @@ function handle(conn: Conn, op: ClientOp) {
       }
       const type = op.type ?? "chat";
       if (!MESSAGE_TYPES.includes(type) || type === "system") return fail(`type không hợp lệ: ${type}`);
+      if (type === "report") return fail("Báo cáo B7 gửi bằng tool submit_report (để được lưu làm báo cáo của ticket)");
       const replyTo = op.replyTo ?? null;
       if (replyTo !== null && !store.getMessage(room, replyTo)) return fail(`Không có tin nhắn #${replyTo}`);
       const msg = store.addMessage({ room, from: name, to, type, content, replyTo });
@@ -352,6 +366,10 @@ function handle(conn: Conn, op: ClientOp) {
     }
     case "bug_update": {
       return reply(updateBug(room, name, conn.kind === "viewer", op));
+    }
+    case "report": {
+      if (conn.kind === "viewer") return fail("User sửa báo cáo trên web (nút 🏁)");
+      return reply(submitReport(room, name, op.content, op.attachments));
     }
     case "upload": {
       return reply(saveAttachment(room, op.filename, op.data));
@@ -403,6 +421,7 @@ function kickoff(room: string, meta: KickoffMeta, sendNow: boolean): ChatMessage
   for (const [k, v] of Object.entries(meta)) if (typeof v === "string" && v.trim()) clean[k] = v.trim();
   store.setMeta(room, clean);
   if (!sendNow) return null;
+  if (store.closedAt(room)) reopenRoom(room, "user gửi kickoff: ticket được mở lại");
   if (!store.isOnDuty(room)) setDuty(room, true);
   const msg = store.addMessage({
     room,
@@ -535,8 +554,148 @@ function saveAttachment(room: string, filename: string, data: string): { url: st
   return { url: `/att/${encodeURIComponent(room)}/${file}` };
 }
 
+// ---------- Phase 5: báo cáo B7, đóng / mở lại ticket, tóm tắt phòng ----------
+
+/** Agent gửi báo cáo chung (B7): lưu phiên bản mới + tin "report" cho user */
+function submitReport(room: string, name: string, content: string, attachments?: string[]) {
+  const body = content?.trim();
+  if (!body) throw new OpError("Báo cáo rỗng");
+  const message = store.addMessage({ room, from: name, to: HUMAN_NAME, type: "report", content: `${body}${images(attachments)}`, replyTo: null });
+  const report = store.addReport(room, name, message.content, message.id);
+  deliver(message);
+  recordStep(room, name, "B7");
+  progress(room);
+  broadcastBoard(room);
+  return { report, message, version: store.countReports(room) };
+}
+
+/** User sửa báo cáo trên web: lưu phiên bản mới, không gửi tin cho agent */
+function editReport(room: string, content: string) {
+  const body = content?.trim();
+  if (!body) throw new OpError("Báo cáo rỗng");
+  if (store.latestReport(room)?.content === body) return store.latestReport(room)!;
+  const report = store.addReport(room, HUMAN_NAME, body, null);
+  systemMessage(room, `user đã sửa báo cáo B7 (phiên bản ${store.countReports(room)})`);
+  broadcastBoard(room);
+  return report;
+}
+
+function closeRoom(room: string, report?: string) {
+  if (report?.trim()) editReport(room, report);
+  if (!store.closedAt(room)) {
+    store.setClosed(room, true);
+    hubMessage(
+      room,
+      "🏁 **User đã đóng ticket.** Dừng mọi việc, không gửi thêm tin, không gọi wait_for_messages nữa: kết thúc lượt. " +
+        "Ticket được mở lại (tcm resume) thì bạn sẽ được gọi vào bằng session mới.",
+    );
+  }
+  setDuty(room, false);
+  broadcastRoom(room);
+  broadcastBoard(room);
+}
+
+function reopenRoom(room: string, note = "user đã mở lại ticket") {
+  if (store.closedAt(room)) {
+    store.setClosed(room, false);
+    systemMessage(room, note);
+  }
+  setDuty(room, true);
+  broadcastRoom(room);
+  broadcastBoard(room);
+}
+
+const clip = (s: string, n: number) => {
+  const t = s.replace(/!\[[^\]]*\]\([^)]*\)/g, "🖼").replace(/\s+/g, " ").trim();
+  return t.length > n ? `${t.slice(0, n)}…` : t;
+};
+const hhmm = (iso: string) => new Date(iso).toLocaleString("vi-VN", { hour12: false, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+
+/** Tóm tắt phòng (markdown) cho người vào lại: thông tin ticket, tiến độ, bug, việc của mình, việc chờ user, tin gần đây */
+function roomSummary(room: string, forName: string | null): string {
+  const meta = (store.getMeta(room) ?? {}) as Partial<KickoffMeta>;
+  const board = boardOf(room);
+  const people = participantsOf(room);
+  const ticket = meta.ticket ?? room;
+  const info = store.listRooms().find((r) => r.name === room);
+  const out: string[] = [
+    `# Tóm tắt phòng "${room}" · ticket ${ticket}`,
+    `_${board.closedAt ? `ĐÃ ĐÓNG lúc ${hhmm(board.closedAt)}` : "Đang mở"} · trực: ${store.isOnDuty(room) ? "bật" : "tắt"} · ` +
+      `${info?.messageCount ?? 0} tin${info?.lastMessageAt ? ` · tin cuối ${hhmm(info.lastMessageAt)}` : ""}_`,
+  ];
+
+  const t = meta.ticket ?? room;
+  const file = (dir: string | undefined, def: string) => `\`${(dir || def).replace(/\/$/, "")}/${t}.md\``;
+  out.push(
+    "",
+    "## Thông tin ticket",
+    ...(meta.figma ? [`- Figma: ${meta.figma}`] : []),
+    ...(meta.testAccount ? [`- Tài khoản test: ${meta.testAccount}`] : []),
+    ...(meta.appRun || meta.appUrl ? [`- App: ${[meta.appRun && `\`${meta.appRun}\``, meta.appUrl].filter(Boolean).join(" → ")}`] : []),
+    `- File: plan ${file(meta.planDir, "docs/plan")} · test case ${file(meta.testcaseDir, "qa/testcases")} · kết quả test ${file(meta.runsDir, "qa/runs")}`,
+    ...(meta.notes ? [`- Ghi chú: ${meta.notes}`] : []),
+  );
+
+  const steps = stepSummary(board.steps);
+  out.push("", "## Thành viên");
+  for (const p of people.filter((x) => x.kind === "agent")) {
+    const st = steps.get(p.name);
+    out.push(
+      `- **${p.name}** [${p.role || p.kind}] ${p.online ? "online" : "offline"}` +
+        `${st ? ` · đang ở ${st.current} (${STEP_LABEL[st.current]})` : ""}${p.status ? ` · trạng thái cuối: "${p.status}"` : ""}` +
+        ` · hoạt động lần cuối ${hhmm(p.lastSeen)}`,
+    );
+  }
+
+  out.push("", boardMarkdown(board).replace(/^## Tiến độ[\s\S]*?(?=## Bug)/, "").trim());
+
+  const me = forName && people.find((p) => p.name === forName && p.kind === "agent");
+  if (me) {
+    const mine: string[] = [];
+    for (const b of board.bugs) {
+      const tag = `${b.code} (${b.severity}, ${BUG_STATUS_LABEL[b.status]}): ${b.title}`;
+      if (b.assignee === me.name && ["open", "reopened"].includes(b.status)) mine.push(`- ${tag} → fix rồi update_bug fixed, hoặc phản biện (disputed, trích AC)`);
+      if (b.reporter === me.name && b.status === "fixed") mine.push(`- ${tag} → retest: verified hoặc reopened`);
+      if (b.reporter === me.name && b.status === "disputed") mine.push(`- ${tag} → trả lời phản biện: rejected (đồng ý) hoặc open (giữ quan điểm, trích AC)`);
+      if (b.status === "need_user") mine.push(`- ${tag} → đang chờ user phân xử, đừng tranh luận tiếp`);
+    }
+    const row = store.getParticipant(room, me.name);
+    const unread = row ? store.unreadFor(room, me.name, row.lastReadId).length : 0;
+    if (unread) mine.push(`- ${unread} tin chưa đọc gửi cho bạn: sẽ được đính kèm vào kết quả tool hub tiếp theo (hoặc gọi check_inbox).`);
+    if (!board.report && !board.closedAt) mine.push("- Chưa có báo cáo B7 (QA gửi bằng submit_report khi xong).");
+    out.push("", `## Việc của bạn (${me.name})`, ...(mine.length ? mine : ["- Không có việc tồn đọng trên bảng. Đọc tin gần đây để biết đang dở việc gì."]));
+  }
+
+  // Câu hỏi agent gửi user sau tin cuối cùng của user = chưa được trả lời
+  const recent = store.history(room, { limit: 200 }).filter((m) => m.type !== "system");
+  const lastUser = Math.max(0, ...recent.filter((m) => m.from === HUMAN_NAME).map((m) => m.id));
+  const asks = recent.filter((m) => m.id > lastUser && m.from !== HUMAN_NAME && m.type === "question" && (m.to === HUMAN_NAME || m.to === BROADCAST));
+  const needUser = board.bugs.filter((b) => b.status === "need_user");
+  if (asks.length || needUser.length) {
+    out.push(
+      "",
+      "## Đang chờ user",
+      ...needUser.map((b) => `- ${b.code} chờ phân xử: ${b.title}`),
+      ...asks.map((m) => `- #${m.id} ${m.from} hỏi: ${clip(m.content, 200)}`),
+    );
+  }
+
+  out.push(
+    "",
+    "## Báo cáo B7",
+    board.report ? `- Phiên bản ${board.reportVersions}, ${board.report.author} lúc ${hhmm(board.report.createdAt)}` : "- Chưa có.",
+  );
+
+  const last = recent.slice(-15);
+  if (last.length) {
+    out.push("", `## ${last.length} tin gần nhất (đọc đầy đủ bằng get_history)`);
+    for (const m of last) out.push(`- #${m.id} ${hhmm(m.createdAt)} ${m.from} → ${m.to} [${m.type}]: ${clip(m.content, 220)}`);
+  }
+  return out.join("\n");
+}
+
 function broadcastRoom(room: string) {
-  const op: ServerOp = { op: "room", room, onDuty: store.isOnDuty(room) };
+  const op: ServerOp = { op: "room", room, onDuty: store.isOnDuty(room), closed: !!store.closedAt(room) };
   for (const c of roomOnline(room).values()) send(c, op);
   for (const c of roomViewers(room)) send(c, op);
 }
@@ -671,6 +830,43 @@ const server = createServer((req, res) => {
     const room = decodeURIComponent(b[1]);
     if (!NAME_RE.test(room)) return json(res, 400, { error: `Tên phòng không hợp lệ: ${room}` });
     return json(res, 200, boardOf(room));
+  }
+
+  const t = p.match(/^\/api\/rooms\/([^/]+)\/(summary|report\.md|report|close|reopen)$/);
+  if (t) {
+    const room = decodeURIComponent(t[1]);
+    if (!NAME_RE.test(room) || !store.roomExists(room)) return json(res, 404, { error: `Không có phòng "${room}"` });
+    if (t[2] === "summary") {
+      res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" });
+      return void res.end(roomSummary(room, url.searchParams.get("for")));
+    }
+    if (t[2] === "report.md") {
+      const r = store.latestReport(room);
+      if (!r) return json(res, 404, { error: "Chưa có báo cáo" });
+      res.writeHead(200, {
+        "content-type": "text/markdown; charset=utf-8",
+        "content-disposition": `attachment; filename="${(String(store.getMeta(room)?.ticket ?? room)).replace(/[^\w.-]/g, "_")}-report.md"`,
+      });
+      return void res.end(r.content);
+    }
+    if (t[2] === "report" && req.method === "GET") return json(res, 200, store.latestReport(room));
+    if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+    readJson(req)
+      .then((body) => {
+        const b = body as { content?: string; report?: string };
+        if (t[2] === "report") return json(res, 200, editReport(room, b.content ?? ""));
+        if (t[2] === "close") {
+          closeRoom(room, b.report);
+          return json(res, 200, boardOf(room));
+        }
+        reopenRoom(room);
+        return json(res, 200, boardOf(room));
+      })
+      .catch((e) => {
+        if (!(e instanceof OpError) && !(e instanceof SyntaxError)) console.error("[hub]", p, e);
+        json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      });
+    return;
   }
 
   const k = p.match(/^\/api\/rooms\/([^/]+)\/(meta|kickoff|duty)$/);

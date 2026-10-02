@@ -9,6 +9,7 @@ import type {
   ClientOp,
   Participant,
   ParticipantKind,
+  Report,
   ServerOp,
   Step,
 } from "@tcm/shared";
@@ -39,6 +40,8 @@ export class HubClient extends EventEmitter {
   participants: Participant[] = [];
   /** Phòng đang bật chế độ trực (user có thể tắt trên web) */
   onDuty = true;
+  /** Ticket đã đóng (user bấm Đóng ticket) */
+  ticketClosed = false;
 
   constructor(readonly opts: HubClientOptions) {
     super();
@@ -102,6 +105,7 @@ export class HubClient extends EventEmitter {
         log(`đã kết nối hub, phòng "${op.room}" với tên "${this.opts.name}" (${op.unread.length} tin chưa đọc)`);
         this.emit("connected");
         this.onDuty = op.onDuty ?? true;
+        this.ticketClosed = !!op.closed;
         this.emit("welcome", op.unread);
         this.emit("room", this.onDuty);
         break;
@@ -110,6 +114,7 @@ export class HubClient extends EventEmitter {
         break;
       case "room":
         this.onDuty = op.onDuty;
+        this.ticketClosed = !!op.closed;
         this.emit("room", op.onDuty);
         break;
       case "participants":
@@ -199,6 +204,12 @@ export class HubClient extends EventEmitter {
   }
   updateBug(u: { code: string; status: BugStatus; note?: string | null; attachments?: string[] }) {
     return this.request<{ bug: Bug; message: ChatMessage; escalated: boolean }>({ op: "bug_update", ...u });
+  }
+  submitReport(content: string, attachments?: string[]) {
+    return this.request<{ report: Report; message: ChatMessage; version: number }>({ op: "report", content, attachments });
+  }
+  summary() {
+    return this.request<string>({ op: "summary" });
   }
   upload(filename: string, data: Buffer) {
     return this.request<{ url: string }>({ op: "upload", filename, data: data.toString("base64") }, 30_000);

@@ -9,6 +9,7 @@ import type {
   ChatMessage,
   MessageType,
   ParticipantKind,
+  Report,
   RoomInfo,
   Step,
   StepEvent,
@@ -67,6 +68,7 @@ export class Store {
     if (!cols.some((c) => c.name === "on_duty")) {
       this.db.exec("ALTER TABLE rooms ADD COLUMN on_duty INTEGER NOT NULL DEFAULT 1");
     }
+    if (!cols.some((c) => c.name === "closed_at")) this.db.exec("ALTER TABLE rooms ADD COLUMN closed_at TEXT");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS room_meta (room TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS steps (
@@ -85,7 +87,48 @@ export class Store {
         room TEXT NOT NULL, code TEXT NOT NULL, actor TEXT NOT NULL,
         from_status TEXT, to_status TEXT NOT NULL, note TEXT, msg_id INTEGER, at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room TEXT NOT NULL, author TEXT NOT NULL, content TEXT NOT NULL, msg_id INTEGER, created_at TEXT NOT NULL
+      );
     `);
+  }
+
+  // ---------- báo cáo B7, đóng ticket ----------
+
+  addReport(room: string, author: string, content: string, msgId: number | null): Report {
+    const createdAt = now();
+    const r = this.db
+      .prepare("INSERT INTO reports (room, author, content, msg_id, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(room, author, content, msgId, createdAt);
+    return { id: Number(r.lastInsertRowid), author, content, msgId, createdAt };
+  }
+
+  latestReport(room: string): Report | null {
+    const r = this.db
+      .prepare("SELECT id, author, content, msg_id, created_at FROM reports WHERE room = ? ORDER BY id DESC LIMIT 1")
+      .get(room) as { id: number; author: string; content: string; msg_id: number | null; created_at: string } | undefined;
+    return r
+      ? { id: Number(r.id), author: r.author, content: r.content, msgId: r.msg_id === null ? null : Number(r.msg_id), createdAt: r.created_at }
+      : null;
+  }
+
+  countReports(room: string): number {
+    return Number((this.db.prepare("SELECT COUNT(*) AS n FROM reports WHERE room = ?").get(room) as { n: number }).n);
+  }
+
+  closedAt(room: string): string | null {
+    const r = this.db.prepare("SELECT closed_at FROM rooms WHERE name = ?").get(room) as { closed_at: string | null } | undefined;
+    return r?.closed_at ?? null;
+  }
+
+  setClosed(room: string, closed: boolean): void {
+    this.ensureRoom(room);
+    this.db.prepare("UPDATE rooms SET closed_at = ? WHERE name = ?").run(closed ? now() : null, room);
+  }
+
+  roomExists(room: string): boolean {
+    return !!this.db.prepare("SELECT 1 FROM rooms WHERE name = ?").get(room);
   }
 
   // ---------- bước B1–B7 ----------
@@ -227,17 +270,18 @@ export class Store {
   listRooms(): RoomInfo[] {
     const rows = this.db
       .prepare(
-        `SELECT r.name, r.created_at, r.on_duty, COUNT(m.id) AS cnt, MAX(m.created_at) AS last_at
+        `SELECT r.name, r.created_at, r.on_duty, r.closed_at, COUNT(m.id) AS cnt, MAX(m.created_at) AS last_at
          FROM rooms r LEFT JOIN messages m ON m.room = r.name
          GROUP BY r.name ORDER BY COALESCE(MAX(m.created_at), r.created_at) DESC`,
       )
-      .all() as { name: string; created_at: string; on_duty: number; cnt: number; last_at: string | null }[];
+      .all() as { name: string; created_at: string; on_duty: number; closed_at: string | null; cnt: number; last_at: string | null }[];
     return rows.map((r) => ({
       name: r.name,
       createdAt: r.created_at,
       messageCount: Number(r.cnt),
       lastMessageAt: r.last_at,
       onDuty: Number(r.on_duty) === 1,
+      closedAt: r.closed_at,
     }));
   }
 

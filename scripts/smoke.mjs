@@ -13,6 +13,7 @@ const port = 4800 + Math.floor(Math.random() * 100);
 const tmp = mkdtempSync(join(tmpdir(), "tcm-smoke-"));
 const room = "smoke";
 
+
 const hub = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", join(root, "packages/hub/dist/index.js")], {
   env: { ...process.env, HUB_PORT: String(port), HUB_DB: join(tmp, "hub.db"), HUB_IDLE_WARN: "4" },
   stdio: ["ignore", "pipe", "inherit"],
@@ -292,7 +293,75 @@ try {
   const s6 = await runHook("stop", "qa", {}, { HUB_URL: "ws://127.0.0.1:1/ws" });
   check("hub không chạy → hook không cản session", s6.code === 0, JSON.stringify(s6));
   const s7 = await runHook("session", "qa", { source: "compact" });
-  check("SessionStart (compact) in lời nhắc bối cảnh", s7.code === 0 && s7.out.includes("get_history"), JSON.stringify(s7));
+  check("SessionStart (compact) nhắc gọi get_summary", s7.code === 0 && s7.out.includes("get_summary"), JSON.stringify(s7));
+
+  // ---- Phase 5: tóm tắt phòng, báo cáo B7, đóng / mở lại ticket ----
+  const tools5 = (await qa2.client.listTools()).tools.map((t) => t.name);
+  check("bridge có get_summary, submit_report", ["get_summary", "submit_report"].every((t) => tools5.includes(t)), tools5.join(","));
+  await qa2.call("report_bug", { title: "Thiếu thông báo lỗi khi sai mật khẩu", tc: "TC-07", detail: "Expected (AC3): hiện lỗi" });
+  await sleep(100);
+  const sumDev = await devCh.call("get_summary");
+  check(
+    "get_summary (dev): thông tin, thành viên, bug, việc của mình, tin gần đây",
+    ["Tóm tắt phòng", "## Thành viên", "**qa**", "BUG-02", "## Việc của bạn (dev)", "→ fix rồi update_bug fixed", "tin gần nhất"].every((x) => sumDev.text.includes(x)),
+    sumDev.text,
+  );
+  await devCh.call("update_bug", { code: "BUG-02", status: "fixed", note: "thêm message lỗi" });
+  const sumQa = await qa2.call("get_summary");
+  check("get_summary (qa): BUG-02 chờ retest", sumQa.text.includes("## Việc của bạn (qa)") && /BUG-02.*retest/.test(sumQa.text), sumQa.text);
+  await qa2.call("update_bug", { code: "BUG-02", status: "verified" });
+
+  const viaSend = await qa2.call("send_message", { to: "user", type: "report", content: "x" });
+  check("send_message không nhận type report (phải dùng submit_report)", viaSend.isError, viaSend.text);
+  const REPORT = "## Tổng kết TL-9\n**Kết quả:** ✅ Đạt\n\n| Bug | Trạng thái |\n|---|---|\n| BUG-01 | Retest pass |";
+  const sr = await qa2.call("submit_report", { content: REPORT });
+  check("submit_report → phiên bản 1", !sr.isError && sr.text.includes("phiên bản 1"), sr.text);
+  await sleep(150);
+  b = await board();
+  check(
+    "board.report do qa gửi, qa sang B7",
+    b.report?.author === "qa" && b.report.content === REPORT && b.steps.filter((s) => s.name === "qa").at(-1)?.step === "B7",
+    JSON.stringify(b.report),
+  );
+  check("web nhận tin type report gửi user", web.inbox.some((o) => o.op === "message" && o.message.type === "report" && o.message.to === "user"));
+  const ps6 = await (await fetch(`${HTTP}/api/rooms/${room}/participants`)).json();
+  check("user có cảnh báo 'báo cáo chờ duyệt'", ps6.find((p) => p.name === "user")?.attention?.includes("Báo cáo B7"), JSON.stringify(ps6));
+
+  const postJson = async (sub, body = {}) => {
+    const r = await fetch(`${HTTP}/api/rooms/${room}/${sub}`, { method: "POST", body: JSON.stringify(body) });
+    return { status: r.status, data: await r.json() };
+  };
+  const edited = await postJson("report", { content: REPORT + "\n\nuser sửa" });
+  check("user sửa báo cáo trên web → phiên bản 2", edited.status === 200 && edited.data.author === "user" && (await board()).reportVersions === 2, JSON.stringify(edited));
+  const md = await fetch(`${HTTP}/api/rooms/${room}/report.md`);
+  check("tải report.md = phiên bản mới nhất", md.status === 200 && (await md.text()).endsWith("user sửa"));
+
+  const waitClose = qa2.call("wait_for_messages", { timeout_seconds: 20 });
+  await sleep(300);
+  const t1 = Date.now();
+  const cl = await postJson("close");
+  const wc = await waitClose;
+  check("đóng ticket → wait_for_messages trả về ngay, kèm tin 🏁 dừng việc", Date.now() - t1 < 3000 && wc.text.includes("User đã đóng ticket"), wc.text);
+  check("close trả board có closedAt", cl.status === 200 && !!cl.data.closedAt, JSON.stringify(cl));
+  await sleep(150);
+  check("dev nhận tin 🏁 từ hub", pushedText().includes("User đã đóng ticket"), pushedText().slice(-300));
+  const r5 = (await (await fetch(`${HTTP}/api/rooms`)).json()).find((r) => r.name === room);
+  check("REST rooms: closedAt + tắt trực", !!r5?.closedAt && r5.onDuty === false, JSON.stringify(r5));
+  const wc2 = await qa2.call("wait_for_messages", { timeout_seconds: 5 });
+  check("gọi lại wait_for_messages khi ticket đã đóng → bảo kết thúc lượt", wc2.text.includes("ĐÓNG ticket"), wc2.text);
+  const s8 = await runHook("stop", "qa");
+  check("ticket đóng → Stop hook cho kết thúc lượt", s8.code === 0, JSON.stringify(s8));
+  const sumUser = await (await fetch(`${HTTP}/api/rooms/${room}/summary`)).text();
+  check(
+    "summary REST (user): ĐÃ ĐÓNG + báo cáo phiên bản 2, không có mục 'Việc của bạn'",
+    sumUser.includes("ĐÃ ĐÓNG") && sumUser.includes("Phiên bản 2") && !sumUser.includes("Việc của bạn"),
+    sumUser,
+  );
+  check("hub không có API đăng Backlog", (await postJson("backlog")).status === 404);
+  const ro = await postJson("reopen");
+  const r6 = (await (await fetch(`${HTTP}/api/rooms`)).json()).find((r) => r.name === room);
+  check("mở lại ticket → hết closedAt, bật trực", ro.status === 200 && ro.data.closedAt === null && r6?.onDuty === true, JSON.stringify(ro));
+  check("summary phòng không tồn tại → 404", (await fetch(`${HTTP}/api/rooms/khong-co/summary`)).status === 404);
 
   web.ws.close();
   await devCh.client.close();

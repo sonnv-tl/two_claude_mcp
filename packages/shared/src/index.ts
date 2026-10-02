@@ -10,6 +10,7 @@ export const MESSAGE_TYPES = [
   "test_case", // QA tạo / cập nhật test case
   "bug_report", // QA báo bug (steps / expected / actual)
   "handoff", // bàn giao: "đã xong X, tới lượt bạn"
+  "report", // B7: báo cáo tổng kết chung gửi user (qua submit_report)
   "system", // do hub sinh ra
 ] as const;
 export type MessageType = (typeof MESSAGE_TYPES)[number];
@@ -47,6 +48,8 @@ export interface RoomInfo {
   messageCount: number;
   lastMessageAt: string | null;
   onDuty: boolean;
+  /** Ticket đã đóng (user bấm Đóng ticket / tcm close) */
+  closedAt: string | null;
 }
 
 // ---------- Bảng ticket: tiến độ B1–B7 + bug ----------
@@ -128,9 +131,23 @@ export interface Bug {
   events: BugEvent[];
 }
 
+/** Một phiên bản báo cáo B7 (agent gửi bằng submit_report, hoặc user sửa trên web) */
+export interface Report {
+  id: number;
+  author: string;
+  content: string;
+  /** Tin "report" tương ứng (null nếu user sửa trên web) */
+  msgId: number | null;
+  createdAt: string;
+}
+
 export interface Board {
   steps: StepEvent[];
   bugs: Bug[];
+  /** Báo cáo B7 mới nhất */
+  report: Report | null;
+  reportVersions: number;
+  closedAt: string | null;
   /** Số tin agent↔agent liên tiếp không có tiến triển (đổi bước, đổi trạng thái bug, user nhắn) */
   idleChatter: number;
   warning: string | null;
@@ -168,6 +185,10 @@ export type ClientOp =
   | { op: "bug_update"; reqId?: string; code: string; status: BugStatus; note?: string | null; attachments?: string[] }
   /** Tải ảnh (base64) lên hub, trả về { url } dùng được trong markdown */
   | { op: "upload"; reqId?: string; filename: string; data: string }
+  /** B7: lưu báo cáo tổng kết chung + gửi tin "report" cho user */
+  | { op: "report"; reqId?: string; content: string; attachments?: string[] }
+  /** Tóm tắt phòng (markdown) cho người gọi: dùng khi vào lại phòng */
+  | { op: "summary"; reqId?: string }
   /** Đánh dấu đã đọc tới id này (dùng cho agent để tính unread khi reconnect) */
   | { op: "ack"; upToId: number }
   /** Bridge báo đang / thôi chờ trong wait_for_messages */
@@ -178,8 +199,8 @@ export type ClientOp =
 // ---------- hub -> client ----------
 
 export type ServerOp =
-  | { op: "welcome"; reqId?: string; room: string; self: Participant | null; unread: ChatMessage[]; onDuty: boolean }
-  | { op: "room"; room: string; onDuty: boolean }
+  | { op: "welcome"; reqId?: string; room: string; self: Participant | null; unread: ChatMessage[]; onDuty: boolean; closed?: boolean }
+  | { op: "room"; room: string; onDuty: boolean; closed?: boolean }
   | { op: "message"; message: ChatMessage }
   | { op: "participants"; room: string; participants: Participant[] }
   | { op: "board"; room: string; board: Board }
@@ -262,6 +283,30 @@ export function boardMarkdown(board: Board): string {
   return out.join("\n");
 }
 
+const bugCount = (bugs: Bug[], ...st: BugStatus[]) => bugs.filter((b) => st.includes(b.status)).length;
+
+/** Nháp báo cáo B7 từ bảng ticket, cho user tự viết khi agent chưa gửi */
+export function reportDraft(ticket: string, board: Board): string {
+  const b = board.bugs;
+  return [
+    `## Tổng kết ${ticket}`,
+    "**Kết quả:** ✅ Đạt / ⚠️ Đạt có điều kiện / ❌ Chưa đạt",
+    "",
+    `**Bug:** tìm thấy ${b.length} · đã fix + retest pass ${bugCount(b, "verified")} · không phải bug ${bugCount(b, "rejected")} · ` +
+      `còn mở ${bugCount(b, "open", "reopened", "fixed", "disputed", "need_user")}`,
+    ...(b.length
+      ? [
+          "",
+          "| Bug | Mức | Mô tả | Trạng thái |",
+          "|---|---|---|---|",
+          ...b.map((x) => `| ${x.code} | ${x.severity} | ${x.title.replace(/\|/g, "\\|")} | ${BUG_STATUS_LABEL[x.status]} |`),
+        ]
+      : []),
+    "",
+    "**Việc còn mở / cần quyết:** …",
+  ].join("\n");
+}
+
 // ---------- Kickoff ticket ----------
 
 /** Thông tin để soạn tin kickoff. Lưu theo phòng, lấy từ .team-hub.json (tcm start) hoặc form trên web. */
@@ -278,6 +323,11 @@ export interface KickoffMeta {
   runsDir?: string;
   /** Ghi chú thêm (phạm vi, lưu ý…) */
   notes?: string;
+  /** Repo đích (đường dẫn Windows), do tcm start ghi: tcm resume mở lại terminal ở đây */
+  repoDir?: string;
+  /** Repo nằm trong WSL: đường dẫn Linux + distro */
+  wslCwd?: string;
+  distro?: string;
 }
 
 export const KICKOFF_DEFAULTS = { planDir: "docs/plan", testcaseDir: "qa/testcases", runsDir: "qa/runs" } as const;
@@ -301,7 +351,7 @@ export function buildKickoff(meta: KickoffMeta): string {
     "",
     `- **@dev**: B1 tự xem design + viết plan \`${plan}\` → B2 review test case của QA → B3 implement + unit test → B4 chạy app, handoff URL cho QA → B5–B6 fix hoặc phản biện bug.`,
     `- **@qa**: B1 tự xem design + viết test case \`${tc}\` → B2 review plan của DEV → B3 soát code, báo lệch AC sớm → B5–B6 test trên browser (so UI với design trên Figma), ghi kết quả \`${runs}\`, báo bug, retest.`,
-    "- **B7**: QA soạn nháp tổng kết, DEV bổ sung phần kỹ thuật, rồi gửi tôi **1 báo cáo chung**.",
+    "- **B7**: QA soạn nháp tổng kết, DEV bổ sung phần kỹ thuật, rồi QA gửi tôi **1 báo cáo chung** bằng `submit_report`.",
     "",
     "Luật: mỗi vấn đề tranh luận tối đa 2 lượt mỗi bên, sau đó hỏi tôi phân xử. Mọi lý lẽ phải trích AC. Không sửa ticket trên Backlog.",
     ...(meta.notes?.trim() ? ["", `Ghi chú: ${meta.notes.trim()}`] : []),

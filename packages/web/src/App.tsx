@@ -5,6 +5,7 @@ import { BROADCAST, MESSAGE_TYPES, type ChatMessage, type MessageType, type Part
 import { useRoom, useRooms, type OutgoingMessage } from "./useRoom";
 import { KickoffDialog } from "./KickoffDialog";
 import { BugPanel, Stepper } from "./Board";
+import { ReportDialog } from "./ReportDialog";
 
 const HUMAN = "user";
 const USER_TYPES: MessageType[] = ["chat", "question", "handoff"];
@@ -16,6 +17,7 @@ const TYPE_LABEL: Record<MessageType, string> = {
   test_case: "test case",
   bug_report: "bug",
   handoff: "bàn giao",
+  report: "báo cáo",
   system: "hệ thống",
 };
 
@@ -103,8 +105,12 @@ export function App() {
   const [hidden, setHidden] = useState<Set<MessageType>>(new Set());
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const [kickoffOpen, setKickoffOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
 
-  useEffect(() => setReplyTo(null), [room]);
+  useEffect(() => {
+    setReplyTo(null);
+    setReportOpen(false);
+  }, [room]);
 
   // Mặc định mở phòng hoạt động gần nhất
   useEffect(() => {
@@ -124,13 +130,19 @@ export function App() {
   return (
     <div className="layout">
       {kickoffOpen && room && <KickoffDialog room={room} onClose={() => setKickoffOpen(false)} />}
+      {reportOpen && room && <ReportDialog room={room} board={board} send={send} onClose={() => setReportOpen(false)} />}
       <aside className="rooms">
         <h1>Team Hub</h1>
         <div className="section-title">Phòng</div>
         {rooms.length === 0 && <div className="muted small">Chưa có phòng. Khởi động một Claude session có bridge để tạo phòng.</div>}
         {rooms.map((r) => (
-          <button key={r.name} className={`room ${r.name === room ? "active" : ""}`} onClick={() => setRoom(r.name)}>
-            <span className="room-name">#{r.name}</span>
+          <button
+            key={r.name}
+            className={`room ${r.name === room ? "active" : ""} ${r.closedAt ? "closed" : ""}`}
+            onClick={() => setRoom(r.name)}
+            title={r.closedAt ? `Đã đóng ${new Date(r.closedAt).toLocaleString("vi-VN", { hour12: false })}` : undefined}
+          >
+            <span className="room-name">{r.closedAt ? "✓ " : "#"}{r.name}</span>
             <span className="muted small">{r.messageCount}</span>
           </button>
         ))}
@@ -151,6 +163,14 @@ export function App() {
             </button>
             <button className="duty" disabled={!room} onClick={() => setKickoffOpen(true)} title="Soạn và gửi tin kickoff ticket cho @all">
               🎫 Kickoff
+            </button>
+            <button
+              className={`duty ${board.report && !board.closedAt ? "report-ready" : ""}`}
+              disabled={!room}
+              onClick={() => setReportOpen(true)}
+              title="Báo cáo B7: xem / sửa, tải .md, đóng ticket"
+            >
+              {board.closedAt ? "✓ Đã đóng" : board.report ? "📄 Báo cáo B7" : "🏁 Đóng ticket"}
             </button>
           </div>
           <div className="filters">

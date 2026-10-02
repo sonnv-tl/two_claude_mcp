@@ -13,6 +13,7 @@
 #   PERMISSION_MODE=acceptEdits   vd. cho DEV tự sửa file không cần duyệt
 #   SKIP_PERMISSIONS=1            chạy với --dangerously-skip-permissions (không hỏi duyệt quyền)
 #   CLAUDE_EXTRA="--foo bar"      tham số thêm cho claude
+#   RESUME=1      vào lại ticket đang làm dở (tcm resume): prompt yêu cầu đọc get_summary rồi làm tiếp
 #
 # Trong WSL, `claude` thường là claude.exe của Windows → biến môi trường phải khai báo
 # trong WSLENV thì mới truyền sang process Windows (và tới MCP bridge).
@@ -34,6 +35,11 @@ winpath() {
 }
 
 ARGS=()
+if [[ "${RESUME:-}" == "1" ]]; then
+  INTRO="Bạn là $NAME trong phòng '$ROOM' của team hub. Bạn đang VÀO LẠI ticket đã làm dở (session trước đã đóng, context cũ không còn). Gọi get_summary để đọc tóm tắt phòng (bước, bug, việc của bạn, tin gần đây), đọc lại file plan / test case / kết quả test nếu cần, rồi gửi user 1 tin ngắn: bạn đang ở bước nào và sẽ làm tiếp gì. Sau đó làm tiếp theo vai trò của bạn"
+else
+  INTRO="Bạn là $NAME trong phòng '$ROOM' của team hub. Gọi get_summary để nắm bối cảnh, sau đó làm việc theo vai trò của bạn"
+fi
 if [[ "${NO_HOOKS:-}" != "1" ]]; then
   ARGS+=(--settings "$(winpath "$HERE/../hooks/team-settings.json")")
 fi
@@ -43,10 +49,10 @@ fi
 if [[ "${CHANNEL:-}" == "1" ]]; then
   export HUB_CHANNEL=1
   ARGS+=(--dangerously-load-development-channels server:team-hub)
-  DEFAULT_PROMPT="Bạn là $NAME trong phòng '$ROOM' của team hub. Gọi list_participants và get_history để nắm bối cảnh, sau đó làm việc theo vai trò của bạn. Nếu chưa có việc thì kết thúc lượt, tin nhắn mới sẽ được đẩy tới."
+  DEFAULT_PROMPT="$INTRO. Nếu chưa có việc thì kết thúc lượt, tin nhắn mới sẽ được đẩy tới."
 else
   export HUB_CHANNEL=0
-  DEFAULT_PROMPT="Bạn là $NAME trong phòng '$ROOM' của team hub. Gọi list_participants và get_history để nắm bối cảnh, sau đó vào CHẾ ĐỘ TRỰC: gọi wait_for_messages để chờ việc, xử lý xong mỗi việc thì lại gọi wait_for_messages, hết timeout thì gọi lại. Không kết thúc lượt trừ khi user bảo dừng."
+  DEFAULT_PROMPT="$INTRO, rồi vào CHẾ ĐỘ TRỰC: gọi wait_for_messages để chờ việc, xử lý xong mỗi việc thì lại gọi wait_for_messages, hết timeout thì gọi lại. Không kết thúc lượt trừ khi user bảo dừng."
 fi
 PROMPT="${4:-$DEFAULT_PROMPT}"
 export WSLENV="${WSLENV:+$WSLENV:}AGENT_ROLE:AGENT_NAME:HUB_ROOM:HUB_URL:HUB_CHANNEL:MCP_TOOL_TIMEOUT"

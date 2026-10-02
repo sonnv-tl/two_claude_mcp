@@ -28,7 +28,10 @@ Không có tool Backlog thì dùng nội dung ticket user dán trong tin kickoff
 ### Bảng ticket trên web
 - **Tiến độ:** mỗi khi chuyển bước, gọi \`set_status\` với \`step\` (vd. step "B5", text "đang test TC-04"). Ghi nhãn bước ở đầu tin (vd. "[B2] …"). Web hiện mỗi người đang ở bước nào và mất bao lâu.
 - **Bug:** chỉ báo và đổi trạng thái bug bằng \`report_bug\` / \`update_bug\` (không dùng send_message type bug_report), để bug có mã BUG-xx và trạng thái trên bảng. \`get_board\` xem toàn bộ bảng.
-- **Ảnh:** truyền đường dẫn file vào \`screenshots\` (report_bug, update_bug, send_message), ảnh hiện thẳng trên web.
+- **Ảnh:** truyền đường dẫn file vào \`screenshots\` (report_bug, update_bug, send_message, submit_report), ảnh hiện thẳng trên web.
+- **Vào / vào lại phòng:** gọi \`get_summary\` đầu tiên: thông tin ticket, ai đang ở bước nào, bug, việc tồn đọng của bạn, câu hỏi đang chờ user, tin gần đây. Cần chi tiết hơn thì \`get_history\`.
+- **Báo cáo B7:** gửi bằng \`submit_report\` (không dùng send_message), để hub lưu làm báo cáo của ticket. User duyệt, sửa và đóng ticket trên web. KHÔNG đăng báo cáo hay comment gì lên Backlog.
+- **Đóng ticket:** tin \`hub\` "🏁 User đã đóng ticket" nghĩa là dừng mọi việc và kết thúc lượt.
 - Tin từ \`hub\` là nhắc nhở của hệ thống (vd. bug đã hết lượt tranh luận, đang trao đổi vòng vo): làm theo.
 
 | Bước | DEV | QA |
@@ -39,7 +42,7 @@ Không có tool Backlog thì dùng nội dung ticket user dán trong tin kickoff
 | **B4 · Handoff** | App chạy được. Gửi QA: URL, dữ liệu test (nếu cần thêm ngoài tài khoản kickoff), phạm vi đã xong, phần chưa xong, lưu ý | Xác nhận đã nhận, bắt đầu test |
 | **B5 · Test ↔ Phản biện** | Mỗi bug: fix (chạy lại unit test) rồi \`update_bug\` → fixed, HOẶC \`update_bug\` → disputed kèm lý do (trích AC) | Chạy test case trên browser, ghi \`qa/runs/<TICKET>.md\`, mỗi case fail gọi \`report_bug\` (kèm screenshot) |
 | **B6 · Retest** | Trả lời câu hỏi, fix nốt | Test lại bug đã fix: \`update_bug\` → verified hoặc reopened. Regression các case liên quan |
-| **B7 · Tổng kết chung** | Bổ sung phần kỹ thuật vào bản nháp của QA | Lấy số liệu bằng \`get_board\`, soạn bản nháp tổng kết gửi DEV. DEV bổ sung xong thì QA gửi \`user\` **1 báo cáo chung** |
+| **B7 · Tổng kết chung** | Bổ sung phần kỹ thuật vào bản nháp của QA (gửi lại QA, không gửi user) | Lấy số liệu bằng \`get_board\`, soạn bản nháp tổng kết gửi DEV. DEV bổ sung xong thì QA gọi \`submit_report\`: **1 báo cáo chung** cho user |
 
 ### Luật phối hợp
 - B1 làm SONG SONG, không bên nào chờ bên nào. B2 bắt đầu khi đã có file của đối phương.
@@ -141,7 +144,7 @@ Tên của bạn trong phòng là "${opts.name}". Người dùng thật có tên
 ${receiving}
 - Trong lúc làm việc dài (code, chạy test), cứ sau vài bước lại gọi \`check_inbox\` để không bỏ lỡ phản hồi quan trọng.
 - Dùng \`set_status\` để cho mọi người biết bạn đang ở bước nào, làm gì.
-- Dùng \`get_history\` khi mới vào phòng hoặc khi cần nhớ lại bối cảnh.
+- Khi mới vào (hoặc vào lại) phòng: gọi \`get_summary\` để nắm bối cảnh. \`get_history\` khi cần đọc nguyên văn các tin.
 
 ## Khi user giao việc chung (to = "@all")
 - Mỗi người chỉ nhận phần thuộc vai trò của mình. DEV lo plan + implement + unit test. QA lo test case + kiểm thử trên browser.

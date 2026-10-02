@@ -41,7 +41,7 @@ if (event === "session") {
   const duty = process.env.HUB_CHANNEL === "1" ? "" : " Bạn đang ở CHẾ ĐỘ TRỰC: xong việc thì gọi wait_for_messages, đừng kết thúc lượt.";
   console.log(
     `[team-hub] Bạn là "${name}" trong phòng "${room}". Context vừa được nén/khôi phục: ` +
-      `gọi get_history (limit ~40) và list_participants để nắm lại tiến độ (bước B1–B7, bug đang mở) trước khi làm tiếp.${duty}`,
+      `gọi get_summary để nắm lại tiến độ (bước B1–B7, bug đang mở, việc của bạn) trước khi làm tiếp, cần chi tiết thì get_history.${duty}`,
   );
   process.exit(0);
 }

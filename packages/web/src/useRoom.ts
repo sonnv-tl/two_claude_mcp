@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Board, BugStatus, ChatMessage, MessageType, Participant, RoomInfo, ServerOp } from "@tcm/shared";
 
-const EMPTY_BOARD: Board = { steps: [], bugs: [], idleChatter: 0, warning: null };
+const EMPTY_BOARD: Board = { steps: [], bugs: [], report: null, reportVersions: 0, closedAt: null, idleChatter: 0, warning: null };
 
 export interface OutgoingMessage {
   to: string;
