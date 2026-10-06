@@ -16,7 +16,7 @@ Gửi tay thì thay mã ticket, link Figma và tài khoản test:
 - Tài khoản test: 100000 / Password_1 (không ghi mật khẩu vào file)
 - App: `npm run dev` → http://localhost:8888
 
-- **@dev**: B1 tự xem design + viết plan `docs/plan/PROJ-123.md` → B2 review test case của QA → B3 implement + unit test → B4 chạy app, handoff URL cho QA → B5–B6 fix hoặc phản biện bug.
+- **@dev**: B1 tự xem design + viết plan `docs/plan/PROJ-123.md` → B2 review test case của QA → B3 implement + unit test → chạy `/backend-review`, gửi kết quả cho tôi và chờ tôi duyệt rồi mới fix → B4 chạy app, handoff URL cho QA → B5–B6 fix hoặc phản biện bug.
 - **@qa**: B1 tự xem design + viết test case `qa/testcases/PROJ-123.md` → B2 review plan của DEV → B3 soát code, báo lệch AC sớm → B5–B6 test trên browser (so UI với design trên Figma), ghi kết quả `qa/runs/PROJ-123.md`, báo bug, retest.
 - **B7**: QA soạn nháp tổng kết, DEV bổ sung phần kỹ thuật, rồi QA gửi tôi **1 báo cáo chung** bằng `submit_report`.
 

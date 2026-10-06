@@ -125,7 +125,7 @@ tcm close TLPORTAL-10182              # đóng ticket (giữ báo cáo B7), agen
 
 Ở chế độ channel, tin được đẩy vào session dưới dạng `<channel source="team-hub" from=... type=... msg_id=...>`. Ở cả hai chế độ, tin chưa đọc cũng được **đính kèm vào kết quả của mọi tool** hub. Các loại tin: `chat`, `question`, `ac_deviation`, `test_case`, `bug_report`, `handoff`, `report` (chỉ qua `submit_report`).
 
-Persona mặc định nằm trong `packages/bridge/src/personas.ts`. **DEV**: source + unit/integration test, chạy app và báo URL cho QA. **QA**: không viết unit test; viết test case nghiệp vụ vào `qa/testcases/`, soát code để báo lệch AC sớm, chạy test case trên browser thật, ghi kết quả vào `qa/runs/`, báo bug kèm screenshot. Có thể override bằng biến `AGENT_PERSONA_FILE=path/to/persona.md`.
+Persona mặc định nằm trong `packages/bridge/src/personas.ts`. **DEV**: source + unit/integration test; implement xong thì chạy `/backend-review` (nếu có thay đổi backend), gửi nguyên kết quả review vào ô chat cho bạn và **chờ bạn chọn mục cần fix** (vd. `fix 1,3`, `fix hết must`, `bỏ qua`) rồi mới sửa; sau đó chạy app và báo URL cho QA. **QA**: không viết unit test; viết test case nghiệp vụ vào `qa/testcases/`, soát code để báo lệch AC sớm, chạy test case trên browser thật, ghi kết quả vào `qa/runs/`, báo bug kèm screenshot. Có thể override bằng biến `AGENT_PERSONA_FILE=path/to/persona.md`.
 
 ## Bảng ticket (web)
 

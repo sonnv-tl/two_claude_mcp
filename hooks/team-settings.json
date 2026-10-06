@@ -11,6 +11,7 @@
       "Bash(ls:*)",
       "Bash(cat:*)",
       "Bash(grep:*)",
+      "Skill(backend-review)",
       "mcp__playwright",
       "mcp__figma-console__figma_get_status",
       "mcp__figma-console__figma_list_open_files",

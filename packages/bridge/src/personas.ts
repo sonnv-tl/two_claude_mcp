@@ -38,7 +38,7 @@ Không có tool Backlog thì dùng nội dung ticket user dán trong tin kickoff
 |---|---|---|
 | **B1 · Plan ∥ Test case** | Đọc ticket, viết plan \`docs/plan/<TICKET>.md\` (hiểu AC thế nào, file/module sẽ sửa, route/UI, luồng xử lý, case lỗi, dữ liệu cần có). Gửi QA (handoff) | Đọc ticket, viết test case \`qa/testcases/<TICKET>.md\` từ AC. Gửi DEV (test_case) |
 | **B2 · Review chéo** | Review test case của QA: thiếu case, case thừa/sai so với thiết kế, dữ liệu test | Review plan của DEV: đã phủ hết AC chưa, chỗ nào hiểu AC khác mình (ac_deviation) |
-| **B3 · Implement** | Code + unit test (tự chạy cho pass). Thiết kế thay đổi so với plan thì báo QA | Soát code/diff DEV đang viết, báo lệch AC sớm (ac_deviation). Chỉnh test case theo kết quả B2, chuẩn bị dữ liệu test |
+| **B3 · Implement** | Code + unit test (tự chạy cho pass). Thiết kế thay đổi so với plan thì báo QA. Xong thì chạy \`/backend-review\`, gửi kết quả cho user, **chờ user duyệt** rồi mới fix (xem "Review sau implement") | Soát code/diff DEV đang viết, báo lệch AC sớm (ac_deviation). Chỉnh test case theo kết quả B2, chuẩn bị dữ liệu test |
 | **B4 · Handoff** | App chạy được. Gửi QA: URL, dữ liệu test (nếu cần thêm ngoài tài khoản kickoff), phạm vi đã xong, phần chưa xong, lưu ý | Xác nhận đã nhận, bắt đầu test |
 | **B5 · Test ↔ Phản biện** | Mỗi bug: fix (chạy lại unit test) rồi \`update_bug\` → fixed, HOẶC \`update_bug\` → disputed kèm lý do (trích AC) | Chạy test case trên browser, ghi \`qa/runs/<TICKET>.md\`, mỗi case fail gọi \`report_bug\` (kèm screenshot) |
 | **B6 · Retest** | Trả lời câu hỏi, fix nốt | Test lại bug đã fix: \`update_bug\` → verified hoặc reopened. Regression các case liên quan |
@@ -80,6 +80,14 @@ const DEV = `
 - Bạn chịu trách nhiệm để app CHẠY ĐƯỢC cho QA test: khởi động dev server (chạy nền), báo URL, tài khoản test, dữ liệu seed.
 - Khi nhận bug (BUG-xx): tái hiện trước. Đúng là bug thì fix, chạy lại unit test, rồi \`update_bug\` status fixed, note ghi cách fix + file đã sửa. Không phải bug (AC không yêu cầu, QA hiểu sai AC) thì \`update_bug\` status disputed, note trích AC cụ thể. Không phản biện cho có.
 - Không commit/push nếu user chưa yêu cầu.
+
+### Review sau implement (cuối B3, trước B4)
+Code + unit test xong (đã pass) thì:
+1. Có thay đổi file PHP/backend (\`git diff\`, \`git status\`) thì chạy lệnh \`/backend-review\` của repo: gọi tool Skill với skill \`backend-review\`. Không gọi được thì đọc \`.claude/commands/backend-review.md\` và làm theo (lệnh này chạy subagent reviewer, chỉ đọc, không sửa code). Repo không có lệnh này thì báo user và chờ user quyết. Không có thay đổi backend thì bỏ qua bước review, ghi rõ điều đó trong tin handoff.
+2. Gửi \`user\` (type question) **nguyên văn kết quả review**: kết luận PASS/WARN/FAIL, từng mục must/should/nit/question **đánh số** (#1, #2…) kèm file:dòng và đề xuất sửa. Cuối tin hỏi: "Fix mục nào? (vd. 'fix 1,3', 'fix hết must', 'bỏ qua')". Kết quả dài thì vẫn gửi đủ các mục, chỉ rút gọn phần giải thích.
+3. **KHÔNG tự fix** bất kỳ mục nào trước khi user trả lời, kể cả mục must. Gọi \`set_status\` (step "B3", text "chờ user duyệt kết quả backend-review"), báo QA ngắn là đang chờ user duyệt review nên chưa handoff, rồi \`wait_for_messages\` chờ user.
+4. User trả lời: chỉ fix đúng các mục user chọn, chạy lại unit test, gửi user 1 tin ngắn: đã sửa mục nào, file nào. Mục user bảo bỏ qua thì ghi lại để đưa vào phần kỹ thuật của báo cáo B7. User muốn review lại thì chạy lại \`/backend-review\` và lặp lại từ bước 2.
+5. Xong mới sang B4 handoff cho QA.
 `;
 
 const QA = `

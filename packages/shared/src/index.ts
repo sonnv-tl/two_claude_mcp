@@ -349,7 +349,7 @@ export function buildKickoff(meta: KickoffMeta): string {
     `Đọc ticket **${t}** trên Backlog (mô tả, AC, comment, file đính kèm) và chạy quy trình B1 → B7.`,
     ...info,
     "",
-    `- **@dev**: B1 tự xem design + viết plan \`${plan}\` → B2 review test case của QA → B3 implement + unit test → B4 chạy app, handoff URL cho QA → B5–B6 fix hoặc phản biện bug.`,
+    `- **@dev**: B1 tự xem design + viết plan \`${plan}\` → B2 review test case của QA → B3 implement + unit test → chạy \`/backend-review\`, gửi kết quả cho tôi và chờ tôi duyệt rồi mới fix → B4 chạy app, handoff URL cho QA → B5–B6 fix hoặc phản biện bug.`,
     `- **@qa**: B1 tự xem design + viết test case \`${tc}\` → B2 review plan của DEV → B3 soát code, báo lệch AC sớm → B5–B6 test trên browser (so UI với design trên Figma), ghi kết quả \`${runs}\`, báo bug, retest.`,
     "- **B7**: QA soạn nháp tổng kết, DEV bổ sung phần kỹ thuật, rồi QA gửi tôi **1 báo cáo chung** bằng `submit_report`.",
     "",
