@@ -36,13 +36,20 @@ Không có tool Backlog thì dùng nội dung ticket user dán trong tin kickoff
 
 | Bước | DEV | QA |
 |---|---|---|
-| **B1 · Plan ∥ Test case** | Đọc ticket, viết plan \`docs/plan/<TICKET>.md\` (hiểu AC thế nào, file/module sẽ sửa, route/UI, luồng xử lý, case lỗi, dữ liệu cần có). Gửi QA (handoff) | Đọc ticket, viết test case \`qa/testcases/<TICKET>.md\` từ AC. Gửi DEV (test_case) |
-| **B2 · Review chéo** | Review test case của QA: thiếu case, case thừa/sai so với thiết kế, dữ liệu test | Review plan của DEV: đã phủ hết AC chưa, chỗ nào hiểu AC khác mình (ac_deviation) |
+| **B1 · Plan ∥ Test case** | Đọc ticket, viết plan \`docs/plan/<TICKET>.md\` (hiểu AC thế nào, file/module sẽ sửa, route/UI, luồng xử lý, case lỗi, dữ liệu cần có) theo "Tiêu chí plan". Gửi QA (handoff) | Đọc ticket, viết test case \`qa/testcases/<TICKET>.md\` từ AC. Gửi DEV (test_case) |
+| **B2 · Review chéo** | Review test case của QA: thiếu case, case thừa/sai so với thiết kế, dữ liệu test | Review plan của DEV: đã phủ hết AC chưa, chỗ nào hiểu AC khác mình (ac_deviation), plan có đạt "Tiêu chí plan" không |
 | **B3 · Implement** | Code + unit test (tự chạy cho pass). Thiết kế thay đổi so với plan thì báo QA. Xong thì chạy \`/backend-review\`, gửi kết quả cho user, **chờ user duyệt** rồi mới fix (xem "Review sau implement") | Soát code/diff DEV đang viết, báo lệch AC sớm (ac_deviation). Chỉnh test case theo kết quả B2, chuẩn bị dữ liệu test |
 | **B4 · Handoff** | App chạy được. Gửi QA: URL, dữ liệu test (nếu cần thêm ngoài tài khoản kickoff), phạm vi đã xong, phần chưa xong, lưu ý | Xác nhận đã nhận, bắt đầu test |
 | **B5 · Test ↔ Phản biện** | Mỗi bug: fix (chạy lại unit test) rồi \`update_bug\` → fixed, HOẶC \`update_bug\` → disputed kèm lý do (trích AC) | Chạy test case trên browser, ghi \`qa/runs/<TICKET>.md\`, mỗi case fail gọi \`report_bug\` (kèm screenshot) |
 | **B6 · Retest** | Trả lời câu hỏi, fix nốt | Test lại bug đã fix: \`update_bug\` → verified hoặc reopened. Regression các case liên quan |
 | **B7 · Tổng kết chung** | Bổ sung phần kỹ thuật vào bản nháp của QA (gửi lại QA, không gửi user) | Lấy số liệu bằng \`get_board\`, soạn bản nháp tổng kết gửi DEV. DEV bổ sung xong thì QA gọi \`submit_report\`: **1 báo cáo chung** cho user |
+
+### Tiêu chí plan
+Plan (B1) phải đạt, và QA review plan (B2) theo đúng các tiêu chí này:
+- **Ngắn gọn:** chỉ ghi điều cần để implement và review. Không chép lại ticket, không giải thích dài.
+- **Ít thay đổi nhất:** sửa ít file / ít dòng nhất mà vẫn đủ AC. Tận dụng code, component, hàm sẵn có. Không refactor, không thêm tính năng ngoài AC.
+- **Dễ đọc, dễ bảo trì, dễ mở rộng:** theo đúng cấu trúc và convention sẵn có của repo, đặt tên rõ ràng, không hard-code giá trị lặp lại, không thêm abstraction thừa.
+QA thấy plan vi phạm (thay đổi thừa, có cách đơn giản hơn, khó bảo trì) thì góp ý cụ thể: mục nào trong plan, đề xuất thay thế. Góp ý này tính lượt phản biện như lệch AC.
 
 ### Luật phối hợp
 - B1 làm SONG SONG, không bên nào chờ bên nào. B2 bắt đầu khi đã có file của đối phương.
