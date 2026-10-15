@@ -1,22 +1,24 @@
 #!/usr/bin/env node
 // tcm: mở một ticket cho cặp DEV/QA bằng một lệnh.
 //   tcm init                      tạo .team-hub.json + .team-hub.local.json, thêm file của tcm/agent vào .git/info/exclude
-//   tcm start <TICKET> [options]  bảo đảm hub chạy → lưu thông tin kickoff → mở Windows Terminal 2 pane (DEV | QA)
-//                                 → mở web → gửi kickoff (agent nhận khi vào phòng)
+//   tcm start <TICKET> [options]  bảo đảm hub chạy → lưu thông tin kickoff → hub chạy ngầm DEV + QA
+//                                 → mở web (nút 🖥 để xem terminal) → gửi kickoff (agent nhận khi vào phòng)
 //       --room <tên>     tên phòng (mặc định = mã ticket)
 //       --figma <url>    link Figma thay cho link trong ticket (ghi đè .team-hub.json)
 //       --account "<user> / <pass>"   tài khoản test (ghi đè)
 //       --notes "<text>" ghi chú thêm vào kickoff
 //       --manual         không tự gửi kickoff (soạn/gửi bằng nút 🎫 Kickoff trên web)
 //       --no-open        không mở web
-//       --no-terminal    không mở terminal (tự mở bằng claude-as)
-//       --dry-run        chỉ in lệnh wt.exe, không mở terminal
+//       --wt             mở DEV | QA trong Windows Terminal (cách cũ) thay vì chạy ngầm trên hub
+//       --no-terminal    không chạy agent (tự mở bằng claude-as)
+//       --dry-run        chỉ in cấu hình / lệnh, không chạy agent
 //   tcm resume <ROOM> [options]   vào lại ticket làm dở: in tóm tắt phòng → mở lại ticket nếu đã đóng → mở DEV | QA
 //                                 với prompt "đọc get_summary rồi làm tiếp". Chạy được từ bất kỳ đâu (dùng repo tcm start đã lưu).
-//       --no-open / --no-terminal / --dry-run   như tcm start
+//       --no-open / --wt / --no-terminal / --dry-run   như tcm start
 //   tcm close <ROOM>              đóng ticket (giữ báo cáo B7 hiện có, tắt trực, agent kết thúc lượt)
-//   tcm vscode                    thêm task vào .vscode/tasks.json: 2 terminal DEV | QA chia đôi ngay trong VS Code
+//   tcm vscode                    thêm task "tcm: start ticket" / "tcm: resume ticket" vào .vscode/tasks.json
 //   tcm stop <ROOM>               tắt chế độ trực (agent kết thúc lượt khi xong việc)
+//   tcm kill <ROOM>               tắt hẳn session DEV/QA đang chạy ngầm trên hub
 //   tcm status                    hub + danh sách phòng
 // Chạy từ WSL qua scripts/tcm (wrapper bash), từ PowerShell/cmd qua scripts\tcm.cmd.
 
@@ -199,6 +201,26 @@ function openTerminals(room, cfg, { resume = false } = {}) {
   return true;
 }
 
+/** Hub chạy ngầm DEV + QA (pseudo-terminal), xem / gõ trên web. Session cũ cùng tên (nếu có) bị thay thế. */
+async function startBackground(room, cfg, { resume = false } = {}) {
+  const launch = { ...repoInfo(), agents: cfg.agents ?? {} };
+  if (opts["dry-run"]) {
+    console.log(`[dry-run] POST ${roomPath(room, "agents")} ${JSON.stringify({ launch, resume })}`);
+    return;
+  }
+  const before = (await api(roomPath(room, "agents"))).filter((t) => t.running).map((t) => t.name);
+  if (before.length) console.log(`… ${before.join(", ")} đang chạy ngầm: thay bằng session mới`);
+  const terms = await api(roomPath(room, "agents"), { launch, resume });
+  const pids = terms.filter((t) => t.running).map((t) => t.name);
+  console.log(`✔ chạy ngầm trên hub: ${pids.join(", ")}. Xem / đóng terminal bằng nút 🖥 trên web (đóng vẫn chạy).`);
+}
+
+async function launchAgents(room, cfg, { resume = false } = {}) {
+  if (opts["no-terminal"]) return;
+  if (opts.wt) return void openTerminals(room, cfg, { resume });
+  await startBackground(room, cfg, { resume });
+}
+
 function openWeb(room) {
   spawn("cmd", ["/c", "start", "", `${HUB}/#/${encodeURIComponent(room)}`], { stdio: "ignore", detached: true, windowsHide: true }).unref();
 }
@@ -323,11 +345,7 @@ async function cmdStart() {
   }
   await api(roomPath(room, "duty"), { onDuty: true });
 
-  if (opts["save-ticket"]) {
-    mkdirSync(join(cwd, ".vscode"), { recursive: true });
-    writeFileSync(join(cwd, ".vscode", ".tcm-ticket"), room);
-  }
-  if (!opts["no-terminal"]) openTerminals(room, cfg);
+  await launchAgents(room, cfg);
   if (!opts["no-open"]) openWeb(room);
 
   if (opts.manual) {
@@ -364,65 +382,32 @@ function stripJsonc(text) {
   return out.replace(/,(\s*[}\]])/g, "$1"); // dấu phẩy thừa
 }
 
-/** Ghi task vào .vscode/tasks.json: 2 terminal DEV | QA chia đôi trong VS Code + 1 task gửi kickoff */
+/** Ghi task vào .vscode/tasks.json: "tcm: start ticket" / "tcm: resume ticket" (DEV, QA chạy ngầm trên hub, xem trên web) */
 async function cmdVscode() {
   const { cfg } = loadConfig();
-  const agents = cfg.agents ?? {};
   const T = "${input:tcmTicket}";
   const F = "${input:tcmFigma}";
-  const pres = (reveal) => ({ group: "tcm", panel: "dedicated", reveal, focus: false, showReuseMessage: false, clear: true });
-  // agent(role, resume): lệnh mở 1 session; kick(resume): tcm start/resume (hỏi mã ticket 1 lần, lưu vào .vscode/.tcm-ticket)
-  let agent, kick, shell;
+  let kick, shell;
   if (wslCwd) {
     // VS Code mở repo qua Remote-WSL → task chạy bằng bash trong WSL
-    const envOf = (role, resume) => {
-      const a = agents[role] ?? {};
-      const e = [];
-      if (resume) e.push("RESUME=1");
-      if (role === "qa" && a.browser === false) e.push("NO_BROWSER=1");
-      if (a.model) e.push(`MODEL=${a.model}`);
-      if (a.permissionMode) e.push(`PERMISSION_MODE=${a.permissionMode}`);
-      if (a.skipPermissions !== false) e.push("SKIP_PERMISSIONS=1");
-      if (a.channel) e.push("CHANNEL=1");
-      return e.length ? e.join(" ") + " " : "";
-    };
-    const base = toWslPath(ROOT);
-    // Mã ticket chỉ hỏi 1 lần (ở task kickoff), DEV/QA đọc lại từ .vscode/.tcm-ticket
-    const room = `"$(cat .vscode/.tcm-ticket)"`;
-    agent = (role, resume) => `${envOf(role, resume)}bash ${base}/scripts/claude-as.sh ${role} ${room}`;
-    kick = (resume) =>
-      resume ? `bash ${base}/scripts/tcm resume ${T} --no-terminal --save-ticket` : `bash ${base}/scripts/tcm start ${T} --figma "${F}" --no-terminal --save-ticket`;
+    const tcm = `bash ${toWslPath(ROOT)}/scripts/tcm`;
+    kick = (resume) => (resume ? `${tcm} resume ${T}` : `${tcm} start ${T} --figma "${F}"`);
     shell = { executable: "bash", args: ["-c"] };
   } else {
-    const ROOM = "__ROOM__";
-    const room = "(Get-Content .vscode\.tcm-ticket)";
-    agent = (role, resume) =>
-      "powershell.exe " +
-      agentCmd(role, ROOM, agents[role], { resume }).slice(1).filter((a) => a !== "-NoExit")
-        .map((a) => (a === ROOM ? room : /\s/.test(a) ? `'${a}'` : a)).join(" ");
     const tcmJs = join(ROOT, "scripts", "tcm.mjs");
-    kick = (resume) =>
-      resume ? `& node '${tcmJs}' resume ${T} --no-terminal --save-ticket` : `& node '${tcmJs}' start ${T} --figma '${F}' --no-terminal --save-ticket`;
+    kick = (resume) => (resume ? `& node '${tcmJs}' resume ${T}` : `& node '${tcmJs}' start ${T} --figma '${F}'`);
     shell = { executable: "powershell.exe", args: ["-NoProfile", "-Command"] };
   }
-  const options = { shell };
-  const bg = (label, command) => ({ label, type: "shell", command, options, isBackground: true, problemMatcher: [], presentation: pres("always") });
-  // Terminal kickoff/resume tự đóng khi chạy xong
-  const once = (label, command) => ({ label, type: "shell", command, options, problemMatcher: [], presentation: { ...pres("never"), group: "tcm-kickoff", close: true } });
-  const tasks = [
-    bg("tcm: DEV", agent("dev", false)),
-    bg("tcm: QA", agent("qa", false)),
-    // Hỏi mã ticket (1 lần), lưu thông tin kickoff, mở web, gửi kickoff ngay
-    once("tcm: kickoff", kick(false)),
-    { label: "tcm: agents", dependsOn: ["tcm: DEV", "tcm: QA"], dependsOrder: "parallel", problemMatcher: [] },
-    { label: "tcm: start ticket", dependsOn: ["tcm: kickoff", "tcm: agents"], dependsOrder: "sequence", problemMatcher: [] },
-    // Vào lại ticket làm dở: mở lại phòng, DEV/QA đọc get_summary rồi làm tiếp
-    bg("tcm: DEV (resume)", agent("dev", true)),
-    bg("tcm: QA (resume)", agent("qa", true)),
-    once("tcm: resume", kick(true)),
-    { label: "tcm: agents (resume)", dependsOn: ["tcm: DEV (resume)", "tcm: QA (resume)"], dependsOrder: "parallel", problemMatcher: [] },
-    { label: "tcm: resume ticket", dependsOn: ["tcm: resume", "tcm: agents (resume)"], dependsOrder: "sequence", problemMatcher: [] },
-  ];
+  const task = (label, command) => ({
+    label,
+    type: "shell",
+    command,
+    options: { shell },
+    problemMatcher: [],
+    presentation: { reveal: "always", panel: "dedicated", focus: false, showReuseMessage: false, clear: true },
+  });
+  // Hỏi mã ticket, lưu thông tin kickoff, hub chạy ngầm DEV + QA, mở web, gửi kickoff
+  const tasks = [task("tcm: start ticket", kick(false)), task("tcm: resume ticket", kick(true))];
   const inputs = [
     { id: "tcmTicket", type: "promptString", description: "Mã ticket (cũng là tên phòng), vd. TLPORTAL-10182" },
     {
@@ -442,17 +427,17 @@ async function cmdVscode() {
       die(`không đọc được ${file} (${e.message}). Thêm tay các task sau:\n${JSON.stringify({ tasks, inputs }, null, 2)}`);
     }
   }
-  const labels = new Set(tasks.map((t) => t.label));
   doc.version ??= "2.0.0";
-  doc.tasks = [...(doc.tasks ?? []).filter((t) => !labels.has(t.label)), ...tasks];
+  // Bỏ mọi task "tcm: …" cũ (bản trước mở terminal DEV | QA trong VS Code)
+  doc.tasks = [...(doc.tasks ?? []).filter((t) => !String(t.label ?? "").startsWith("tcm:")), ...tasks];
   const ids = new Set(inputs.map((i) => i.id));
   doc.inputs = [...(doc.inputs ?? []).filter((i) => !ids.has(i.id)), ...inputs];
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(doc, null, 2) + "\n");
   console.log(`✔ ghi ${file}`);
-  ensureExclude([".vscode/tasks.json", ".vscode/.tcm-ticket"]);
+  ensureExclude([".vscode/tasks.json"]);
   console.log(`  VS Code: Ctrl+Shift+P → "Tasks: Run Task" → "tcm: start ticket" → nhập mã ticket. Vào lại ticket làm dở: "tcm: resume ticket".`);
-  console.log(`  2 terminal DEV | QA mở chia đôi trong panel, web mở ở trình duyệt, kickoff gửi ngay, agent nhận khi vào phòng.`);
+  console.log(`  DEV, QA chạy ngầm trên hub, xem / đóng terminal bằng nút 🖥 trên web.`);
 }
 
 async function cmdResume() {
@@ -486,11 +471,7 @@ async function cmdResume() {
     console.log("✔ ticket đã đóng → mở lại, bật trực");
   } else await api(roomPath(room, "duty"), { onDuty: true });
 
-  if (opts["save-ticket"]) {
-    mkdirSync(join(cwd, ".vscode"), { recursive: true });
-    writeFileSync(join(cwd, ".vscode", ".tcm-ticket"), room);
-  }
-  if (!opts["no-terminal"]) openTerminals(room, cfg, { resume: true });
+  await launchAgents(room, cfg, { resume: true });
   if (!opts["no-open"]) openWeb(room);
   console.log(`✔ DEV/QA vào lại sẽ đọc get_summary, báo bạn đang ở đâu rồi làm tiếp. Theo dõi: ${HUB}/#/${room}`);
 }
@@ -512,6 +493,13 @@ async function cmdStop() {
   console.log(`✔ phòng "${arg1}": đã tắt chế độ trực. Agent sẽ kết thúc lượt khi xong việc.`);
 }
 
+async function cmdKill() {
+  if (!arg1) die("cách dùng: tcm kill <ROOM>");
+  if (!(await hubUp())) die("hub không chạy");
+  const terms = await api(roomPath(arg1, "agents/stop"), {});
+  console.log(`✔ phòng "${arg1}": đã tắt session chạy ngầm (${terms.map((t) => `${t.name}: ${t.running ? "chạy" : "tắt"}`).join(", ") || "không có"}).`);
+}
+
 async function cmdStatus() {
   if (!(await hubUp())) {
     console.log(`hub: không chạy (${HUB}). Cài chạy nền: powershell -ExecutionPolicy Bypass -File ${join(ROOT, "scripts", "hub-service.ps1")} install`);
@@ -520,13 +508,16 @@ async function cmdStatus() {
   console.log(`hub: ${HUB}`);
   for (const r of await api("/api/rooms")) {
     const ps = await api(`/api/rooms/${encodeURIComponent(r.name)}/participants`);
-    const who = ps.filter((p) => p.kind === "agent").map((p) => `${p.name}${p.online ? (p.waiting ? "·chờ" : "·làm") : "·off"}${p.attention ? "⚠" : ""}`);
+    const terms = await fetch(`${HUB}${roomPath(r.name, "agents")}`).then((x) => (x.ok ? x.json() : [])).catch(() => []);
+    const bg = new Set(terms.filter((t) => t.running).map((t) => t.name));
+    const who = ps.filter((p) => p.kind === "agent").map((p) =>
+      `${p.name}${p.online ? (p.waiting ? "·chờ" : p.idle ? "·nghỉ" : "·làm") : "·off"}${bg.has(p.name) ? "·ngầm" : ""}${p.attention ? "⚠" : ""}`);
     const state = r.closedAt ? "đóng" : r.onDuty ? "trực" : "nghỉ";
     console.log(`  #${r.name.padEnd(24)} ${String(r.messageCount).padStart(4)} tin  ${state}  ${who.join(" ")}`);
   }
 }
 
-const commands = { init: cmdInit, start: cmdStart, resume: cmdResume, close: cmdClose, stop: cmdStop, status: cmdStatus, vscode: cmdVscode };
+const commands = { init: cmdInit, start: cmdStart, resume: cmdResume, close: cmdClose, stop: cmdStop, kill: cmdKill, status: cmdStatus, vscode: cmdVscode };
 if (!commands[cmd]) {
   console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1).filter((l, i, arr) => arr.slice(0, i + 1).every((x) => x.startsWith("//"))).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
   process.exit(cmd ? 1 : 0);

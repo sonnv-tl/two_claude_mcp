@@ -52,8 +52,10 @@ import {
   type Participant,
   type ParticipantKind,
   type ServerOp,
+  type TermInfo,
 } from "@tcm/shared";
 import { Store, HUMAN_NAME, type ParticipantRow } from "./db.js";
+import { Terminals, agentCommand, DEFAULT_ROLES, type RoomLaunch } from "./terminals.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -188,6 +190,14 @@ function send(conn: Conn, op: ServerOp) {
   if (conn.ws.readyState === WebSocket.OPEN) conn.ws.send(JSON.stringify(op));
 }
 
+/** Callback cố định của mỗi tab web để nhận dữ liệu terminal */
+const viewerFns = new WeakMap<Conn, (op: ServerOp) => void>();
+function viewerOf(conn: Conn) {
+  let fn = viewerFns.get(conn);
+  if (!fn) viewerFns.set(conn, (fn = (op) => send(conn, op)));
+  return fn;
+}
+
 // ---------- trạng thái runtime (không lưu DB) ----------
 
 interface Runtime {
@@ -196,13 +206,97 @@ interface Runtime {
   /** Lần gần nhất Stop hook chặn agent kết thúc lượt */
   lastBlockAt: number;
   attention: string | null;
+  /** Đã kết thúc lượt, đứng ở prompt (Stop hook cho qua / idle_prompt) */
+  idle: boolean;
+  /** Tin bridge đã kèm vào kết quả tool khác mà agent chưa phản hồi (op followup) */
+  followUp: number[];
+  /** Tin lớn nhất đã nhắc qua PostToolUse / Stop hook: mỗi tin chỉ nhắc một lần */
+  postNudgedId: number;
+  stopNudgedId: number;
+  wakeTimer: NodeJS.Timeout | null;
 }
 const runtimes = new Map<string, Runtime>();
 function rt(room: string, name: string): Runtime {
   const k = `${room}/${name}`;
   let r = runtimes.get(k);
-  if (!r) runtimes.set(k, (r = { waiting: false, lastWaitAt: 0, lastBlockAt: 0, attention: null }));
+  if (!r)
+    runtimes.set(
+      k,
+      (r = { waiting: false, lastWaitAt: 0, lastBlockAt: 0, attention: null, idle: false, followUp: [], postNudgedId: 0, stopNudgedId: 0, wakeTimer: null }),
+    );
   return r;
+}
+
+// ---------- terminal agent chạy ngầm trong hub ----------
+
+const terminals = new Terminals((room) => broadcastTerms(room));
+
+function termsOf(room: string): TermInfo[] {
+  const launch = store.getLaunch(room) as RoomLaunch | null;
+  const list = terminals.list(room);
+  const canStart = !!launch && !!(launch.repoDir || launch.wslCwd);
+  // DEV/QA chưa chạy lần nào (hub vừa khởi động lại…) cũng hiện, để web bấm chạy được
+  if (canStart)
+    for (const role of DEFAULT_ROLES)
+      if (!list.some((t) => t.name === role)) list.push({ name: role, role, running: false, pid: null, startedAt: "", exitCode: null });
+  return list.map((t) => ({ ...t, canStart }));
+}
+
+function broadcastTerms(room: string) {
+  const op: ServerOp = { op: "terms", room, terms: termsOf(room) };
+  for (const c of roomViewers(room)) send(c, op);
+}
+
+/** Chạy (lại) session agent của phòng trong terminal ngầm. resume: prompt "đọc get_summary rồi làm tiếp". */
+function startAgent(room: string, name: string, resume: boolean) {
+  const launch = store.getLaunch(room) as RoomLaunch | null;
+  if (!launch) throw new OpError(`Phòng "${room}" chưa có cấu hình chạy agent: chạy tcm start / tcm resume trong repo`);
+  let cmd: ReturnType<typeof agentCommand>;
+  try {
+    cmd = agentCommand(repoRoot, room, name, launch, resume, `ws://127.0.0.1:${PORT}/ws`);
+  } catch (e) {
+    throw new OpError(e instanceof Error ? e.message : String(e));
+  }
+  const r = rt(room, name);
+  Object.assign(r, { idle: false, followUp: [] });
+  terminals.start(room, name, name, cmd);
+  console.log(`[hub] chạy ngầm ${room}/${name}: ${cmd.file} ${cmd.args.join(" ")}`);
+}
+
+/**
+ * Tin mới gửi tới agent đang nghỉ ở prompt (đã kết thúc lượt): gõ vào terminal để đánh thức.
+ * Tin của user luôn đánh thức (kể cả ticket đã đóng / nghỉ trực); tin của agent khác chỉ khi phòng đang trực.
+ */
+function maybeWake(msg: ChatMessage) {
+  if (msg.type === "system" || msg.from === "hub") return;
+  const room = msg.room;
+  const fromUser = msg.from === HUMAN_NAME;
+  if (!fromUser && (!store.isOnDuty(room) || store.closedAt(room))) return;
+  for (const p of store.listParticipants(room)) {
+    if (p.kind !== "agent" || !isAddressedTo(msg, p.name)) continue;
+    const r = rt(room, p.name);
+    if (!r.idle || r.waiting || r.wakeTimer) continue;
+    if (!terminals.isRunning(room, p.name)) {
+      if (fromUser && roomOnline(room).has(p.name))
+        systemMessage(room, `${p.name} đang nghỉ ở prompt, không chạy ngầm trên hub nên không tự đánh thức được: gõ vào terminal của nó`);
+      continue;
+    }
+    // Gom các tin đến liền nhau thành một lần đánh thức
+    r.wakeTimer = setTimeout(() => {
+      r.wakeTimer = null;
+      if (!r.idle || r.waiting) return;
+      const closed = !!store.closedAt(room);
+      const onDuty = store.isOnDuty(room) && !closed;
+      const tail = onDuty
+        ? "Xử lý xong thì quay lại chế độ trực (wait_for_messages)."
+        : `${closed ? "Ticket đã đóng" : "Phòng đang nghỉ trực"}: xử lý xong, trả lời bằng send_message rồi kết thúc lượt, không gọi wait_for_messages.`;
+      if (terminals.type(room, p.name, `[team-hub] Có tin mới từ ${msg.from} gửi bạn. Gọi check_inbox để đọc và xử lý. ${tail}`)) {
+        r.idle = false;
+        systemMessage(room, `đã đánh thức ${p.name} (tin mới từ ${msg.from})`);
+        broadcastParticipants(room);
+      }
+    }, 1500);
+  }
 }
 function setAttention(room: string, name: string, text: string | null) {
   const r = rt(room, name);
@@ -216,6 +310,7 @@ function toParticipant(room: string, p: ParticipantRow): Participant {
   return {
     waiting: r.waiting,
     attention: r.attention,
+    idle: r.idle,
     name: p.name,
     role: p.role,
     kind: p.kind,
@@ -243,6 +338,7 @@ function deliver(msg: ChatMessage) {
     if (name === msg.from || isAddressedTo(msg, name)) send(c, op);
   }
   for (const c of roomViewers(msg.room)) send(c, op);
+  maybeWake(msg);
 }
 
 function systemMessage(room: string, content: string) {
@@ -267,6 +363,7 @@ function handle(conn: Conn, op: ClientOp) {
       roomViewers(room).add(conn);
       send(conn, { op: "welcome", reqId, room, self: null, unread: [], onDuty: store.isOnDuty(room), closed: !!store.closedAt(room) });
       send(conn, { op: "board", room, board: boardOf(room) });
+      send(conn, { op: "terms", room, terms: termsOf(room) });
       broadcastParticipants(room); // "user" chuyển sang online
       return;
     }
@@ -287,7 +384,7 @@ function handle(conn: Conn, op: ClientOp) {
     Object.assign(conn, { kind: op.kind, room, name });
     roomOnline(room).set(name, conn);
     const unread = store.unreadFor(room, name, row.lastReadId);
-    Object.assign(rt(room, name), { waiting: false, attention: null, lastBlockAt: 0 });
+    Object.assign(rt(room, name), { waiting: false, attention: null, lastBlockAt: 0, idle: false, followUp: [] });
     send(conn, { op: "welcome", reqId, room, self: toParticipant(room, row), unread, onDuty: store.isOnDuty(room), closed: !!store.closedAt(room) });
     broadcastParticipants(room);
     if (!existing) systemMessage(room, `${name} (${op.role || op.kind}) đã tham gia phòng`);
@@ -309,9 +406,28 @@ function handle(conn: Conn, op: ClientOp) {
     return reply(roomSummary(conn.room, conn.kind === "viewer" ? HUMAN_NAME : conn.name));
   }
 
+  if (conn.kind === "viewer" && op.op.startsWith("term_")) {
+    const viewer = viewerOf(conn);
+    if (op.op === "term_attach") {
+      terminals.attach(conn.room, op.name, viewer, op.cols, op.rows);
+      return reply(true);
+    }
+    if (op.op === "term_detach") return terminals.detach(conn.room, op.name, viewer);
+    if (op.op === "term_input") return terminals.input(conn.room, op.name, String(op.data ?? ""));
+    if (op.op === "term_resize") return terminals.resize(conn.room, op.name, Number(op.cols), Number(op.rows));
+  }
+  if (conn.kind === "viewer" && op.op === "agent_start") {
+    if (!NAME_RE.test(op.name ?? "")) return fail(`Tên không hợp lệ: ${op.name}`);
+    startAgent(conn.room, op.name, op.resume !== false);
+    return reply(true);
+  }
+  if (conn.kind === "viewer" && op.op === "agent_stop") {
+    return reply(terminals.stop(conn.room, op.name));
+  }
+
   // Web (viewer) chỉ được gửi tin, dưới tên "user"
   if (conn.kind === "viewer" && op.op !== "send" && op.op !== "duty" && op.op !== "bug_update")
-    return fail("Viewer chỉ được xem, gửi tin, bật/tắt trực và phân xử bug");
+    return fail("Viewer chỉ được xem, gửi tin, bật/tắt trực, phân xử bug và điều khiển terminal");
   const room = conn.room;
   const name = conn.kind === "viewer" ? HUMAN_NAME : conn.name;
   store.touch(room, name);
@@ -357,8 +473,13 @@ function handle(conn: Conn, op: ClientOp) {
       if (r.waiting) {
         r.lastWaitAt = Date.now();
         r.attention = null; // đã quay lại trực → không còn kẹt ở terminal
+        r.idle = false;
       }
       broadcastParticipants(room);
+      return;
+    }
+    case "followup": {
+      rt(room, name).followUp = (op.ids ?? []).filter((n) => Number.isInteger(n)).slice(-50);
       return;
     }
     case "bug_create": {
@@ -387,6 +508,7 @@ function handle(conn: Conn, op: ClientOp) {
 function onClose(conn: Conn) {
   if (conn.kind === null) return;
   if (conn.kind === "viewer") {
+    terminals.detachAll(viewerOf(conn));
     roomViewers(conn.room).delete(conn);
     if (roomViewers(conn.room).size === 0) broadcastParticipants(conn.room);
     return;
@@ -586,8 +708,8 @@ function closeRoom(room: string, report?: string) {
     store.setClosed(room, true);
     hubMessage(
       room,
-      "🏁 **User đã đóng ticket.** Dừng mọi việc, không gửi thêm tin, không gọi wait_for_messages nữa: kết thúc lượt. " +
-        "Ticket được mở lại (tcm resume) thì bạn sẽ được gọi vào bằng session mới.",
+      "🏁 **User đã duyệt báo cáo và đóng ticket.** Dừng mọi việc, không gửi thêm tin, không gọi wait_for_messages nữa: kết thúc lượt. " +
+        "Nếu sau này user nhắn bạn, bạn sẽ được đánh thức để xử lý tin đó.",
     );
   }
   setDuty(room, false);
@@ -705,36 +827,90 @@ function broadcastRoom(room: string) {
 /** Agent kết thúc lượt liên tiếp trong khoảng này mà không quay lại chờ → thả, tránh vòng lặp đốt token */
 const STOP_LOOP_WINDOW_MS = 60_000;
 
+/** Tin gửi cho agent mà agent chưa đọc (bridge chưa ack) hoặc đã thấy kèm trong kết quả tool nhưng chưa phản hồi */
+function pendingFor(room: string, name: string): ChatMessage[] {
+  const row = store.getParticipant(room, name);
+  if (!row) return [];
+  const unread = store.unreadFor(room, name, row.lastReadId);
+  const follow = rt(room, name).followUp.filter((id) => !unread.some((m) => m.id === id));
+  const extra = follow.map((id) => store.getMessage(room, id)).filter((m): m is ChatMessage => !!m);
+  return [...extra, ...unread].sort((a, b) => a.id - b.id);
+}
+
+const fmtPending = (list: ChatMessage[], n = 600) => list.map((m) => `- #${m.id} [${m.type}] từ ${m.from}: ${clip(m.content, n)}`).join("\n");
+
 function handleHook(h: HookRequest): HookResponse {
   const { room, name } = h;
   if (!room || !name || !store.getParticipant(room, name)) return {};
   const r = rt(room, name);
+  const busy = () => {
+    if (!r.idle) return;
+    r.idle = false;
+    broadcastParticipants(room);
+  };
 
-  if (h.event === "clear") {
+  if (h.event === "clear" || h.event === "prompt") {
     if (r.attention) setAttention(room, name, null);
+    busy();
     return {};
+  }
+
+  if (h.event === "post") {
+    if (r.attention) setAttention(room, name, null);
+    busy();
+    // Tool của hub tự kèm tin mới vào kết quả → không nhắc trùng
+    if (/team-hub/.test(h.input?.tool_name ?? "")) return {};
+    // Tin user (và hub) gửi trong lúc agent đang làm việc dài: chèn ngay vào context sau tool vừa chạy
+    const fresh = pendingFor(room, name).filter((m) => m.id > r.postNudgedId && (m.from === HUMAN_NAME || m.from === "hub"));
+    if (!fresh.length) return {};
+    r.postNudgedId = Math.max(...fresh.map((m) => m.id));
+    return {
+      context:
+        `[team-hub] 📬 Có ${fresh.length} tin MỚI gửi bạn trong lúc bạn đang làm việc:\n${fmtPending(fresh)}\n` +
+        "Đọc ngay: nếu tin đổi yêu cầu, bảo dừng hay hỏi gì thì xử lý trước rồi mới làm tiếp. " +
+        "Gọi check_inbox để nhận đầy đủ (đánh dấu đã đọc) và trả lời người gửi bằng send_message.",
+    };
   }
 
   if (h.event === "notify") {
     const t = h.input?.notification_type;
     if (t === "permission_prompt") setAttention(room, name, "⚠️ Đang chờ bạn duyệt quyền trong terminal");
-    else if (t === "idle_prompt") setAttention(room, name, "💤 Đang rảnh ở terminal (không trực)");
-    else if (t === "elicitation_dialog" || t === "agent_needs_input")
+    else if (t === "idle_prompt") {
+      r.idle = true;
+      setAttention(room, name, "💤 Đang rảnh ở terminal (không trực)");
+    } else if (t === "elicitation_dialog" || t === "agent_needs_input")
       setAttention(room, name, "⚠️ Đang chờ bạn trả lời trong terminal");
     return {};
   }
 
   // event === "stop"
   if (r.attention) setAttention(room, name, null);
-  if (!store.isOnDuty(room)) return {};
-  if (!roomOnline(room).has(name)) return {}; // bridge không kết nối → đừng giữ agent lại
+  const ended = (): HookResponse => {
+    r.idle = true;
+    broadcastParticipants(room);
+    return {};
+  };
+  // Còn tin chưa đọc / chưa phản hồi → chặn một lần (mỗi tin chỉ nhắc một lần, tránh vòng lặp)
+  const pending = pendingFor(room, name).filter((m) => m.id > r.stopNudgedId && m.from !== "hub");
+  if (pending.length && roomOnline(room).has(name)) {
+    r.stopNudgedId = Math.max(...pending.map((m) => m.id));
+    return {
+      block: true,
+      reason:
+        `[team-hub] Đừng kết thúc lượt: còn ${pending.length} tin gửi bạn chưa được xử lý (có thể đến trong lúc bạn đang làm việc dài):\n${fmtPending(pending, 300)}\n` +
+        "Gọi check_inbox, xử lý và trả lời người gửi trước.",
+    };
+  }
+  if (h.channel || !store.isOnDuty(room)) return ended();
+  if (!roomOnline(room).has(name)) return ended(); // bridge không kết nối → đừng giữ agent lại
   const now = Date.now();
   if (r.lastBlockAt && now - r.lastBlockAt < STOP_LOOP_WINDOW_MS && r.lastWaitAt < r.lastBlockAt) {
     // Vừa bị chặn mà không chịu gọi wait_for_messages → thả ra
     r.lastBlockAt = 0;
-    setAttention(room, name, "💤 Đã rời chế độ trực. Gõ vào terminal để gọi lại");
+    const hosted = terminals.isRunning(room, name);
+    setAttention(room, name, hosted ? "💤 Đã rời chế độ trực. Nhắn cho nó để đánh thức" : "💤 Đã rời chế độ trực. Gõ vào terminal để gọi lại");
     systemMessage(room, `${name} đã rời chế độ trực (kết thúc lượt liên tục)`);
-    return {};
+    return ended();
   }
   r.lastBlockAt = now;
   return {
@@ -802,11 +978,46 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string
   res.end(readFileSync(file));
 }
 
+/**
+ * Chỉ web của hub (và vite dev) được gọi API ghi / mở WebSocket: hub chạy được terminal agent,
+ * không để trang web lạ trong trình duyệt gửi lệnh tới 127.0.0.1. tcm, bridge, hook không gửi Origin.
+ */
+const ALLOWED_ORIGINS = new Set(
+  [PORT, 5173].flatMap((port) => [`http://127.0.0.1:${port}`, `http://localhost:${port}`]),
+);
+const originOk = (origin: string | undefined) => !origin || ALLOWED_ORIGINS.has(origin);
+
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   const p = url.pathname;
 
+  if (req.method !== "GET" && !originOk(req.headers.origin)) return json(res, 403, { error: "origin không được phép" });
   if (p === "/api/health") return json(res, 200, { ok: true });
+
+  const ag = p.match(/^\/api\/rooms\/([^/]+)\/agents(\/stop)?$/);
+  if (ag) {
+    const room = decodeURIComponent(ag[1]);
+    if (!NAME_RE.test(room)) return json(res, 400, { error: `Tên phòng không hợp lệ: ${room}` });
+    if (req.method === "GET" && !ag[2]) return json(res, 200, termsOf(room));
+    if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+    readJson(req)
+      .then((body) => {
+        const b = body as { launch?: RoomLaunch; resume?: boolean; names?: string[] };
+        const names = (b.names?.length ? b.names : DEFAULT_ROLES).filter((n) => NAME_RE.test(n));
+        if (ag[2]) {
+          names.forEach((n) => terminals.stop(room, n));
+          return json(res, 200, termsOf(room));
+        }
+        if (b.launch) store.setLaunch(room, b.launch as Record<string, unknown>);
+        for (const n of names) startAgent(room, n, !!b.resume);
+        return json(res, 200, termsOf(room));
+      })
+      .catch((e) => {
+        if (!(e instanceof OpError) && !(e instanceof SyntaxError)) console.error("[hub]", p, e);
+        json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      });
+    return;
+  }
   if (p === "/api/hook" && req.method === "POST") {
     readJson(req)
       .then((body) => json(res, 200, handleHook(body as HookRequest)))
@@ -902,7 +1113,7 @@ const server = createServer((req, res) => {
   serveStatic(req, res, p);
 });
 
-const wss = new WebSocketServer({ server, path: "/ws" });
+const wss = new WebSocketServer({ server, path: "/ws", verifyClient: (info: { origin?: string }) => originOk(info.origin) });
 const conns = new Set<Conn>();
 
 wss.on("connection", (ws) => {
@@ -950,6 +1161,15 @@ server.on("error", (e: NodeJS.ErrnoException) => {
   }
   throw e;
 });
+
+// Hub tắt thì session agent chạy ngầm cũng tắt (vào lại: tcm resume)
+const shutdown = () => {
+  terminals.stopAll();
+  process.exit(0);
+};
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+process.on("exit", () => terminals.stopAll());
 
 server.listen(PORT, HOST, () => {
   console.log(`[hub] http://${HOST}:${PORT}  (ws: ws://${HOST}:${PORT}/ws)`);

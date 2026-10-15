@@ -7,15 +7,32 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { WebSocket as WsClient } from "ws";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const port = 4800 + Math.floor(Math.random() * 100);
 const tmp = mkdtempSync(join(tmpdir(), "tcm-smoke-"));
 const room = "smoke";
+// Agent giả chạy trong terminal ngầm của hub: in lại từng dòng được gõ vào
+const fakeAgent = join(tmp, "fake-agent.mjs");
+writeFileSync(
+  fakeAgent,
+  `console.log("FAKE READY " + process.argv.slice(2).join(" "));
+let buf = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (d) => {
+  buf += d;
+  for (let i; (i = buf.search(/[\\r\\n]/)) >= 0; ) {
+    const line = buf.slice(0, i).trim();
+    buf = buf.slice(i + 1);
+    if (line) console.log("GOT: " + line);
+  }
+});`,
+);
 
 
 const hub = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", join(root, "packages/hub/dist/index.js")], {
-  env: { ...process.env, HUB_PORT: String(port), HUB_DB: join(tmp, "hub.db"), HUB_IDLE_WARN: "4" },
+  env: { ...process.env, HUB_PORT: String(port), HUB_DB: join(tmp, "hub.db"), HUB_IDLE_WARN: "4", HUB_AGENT_CMD: JSON.stringify([process.execPath, fakeAgent]) },
   stdio: ["ignore", "pipe", "inherit"],
 });
 await new Promise((ok) => hub.stdout.on("data", (d) => String(d).includes("[hub] http") && ok()));
@@ -341,10 +358,10 @@ try {
   const t1 = Date.now();
   const cl = await postJson("close");
   const wc = await waitClose;
-  check("đóng ticket → wait_for_messages trả về ngay, kèm tin 🏁 dừng việc", Date.now() - t1 < 3000 && wc.text.includes("User đã đóng ticket"), wc.text);
+  check("đóng ticket → wait_for_messages trả về ngay, kèm tin 🏁 dừng việc", Date.now() - t1 < 3000 && wc.text.includes("đóng ticket.**"), wc.text);
   check("close trả board có closedAt", cl.status === 200 && !!cl.data.closedAt, JSON.stringify(cl));
   await sleep(150);
-  check("dev nhận tin 🏁 từ hub", pushedText().includes("User đã đóng ticket"), pushedText().slice(-300));
+  check("dev nhận tin 🏁 từ hub", pushedText().includes("đóng ticket.**"), pushedText().slice(-300));
   const r5 = (await (await fetch(`${HTTP}/api/rooms`)).json()).find((r) => r.name === room);
   check("REST rooms: closedAt + tắt trực", !!r5?.closedAt && r5.onDuty === false, JSON.stringify(r5));
   const wc2 = await qa2.call("wait_for_messages", { timeout_seconds: 5 });
@@ -362,6 +379,64 @@ try {
   const r6 = (await (await fetch(`${HTTP}/api/rooms`)).json()).find((r) => r.name === room);
   check("mở lại ticket → hết closedAt, bật trực", ro.status === 200 && ro.data.closedAt === null && r6?.onDuty === true, JSON.stringify(ro));
   check("summary phòng không tồn tại → 404", (await fetch(`${HTTP}/api/rooms/khong-co/summary`)).status === 404);
+
+  // ---- Tin user gửi giữa lúc agent đang làm việc dài ----
+  await qa2.call("check_inbox");
+  await web.request({ op: "send", to: "qa", content: "đổi ý: test thêm case mobile" });
+  await sleep(200);
+  const p1 = await runHook("post", "qa", { tool_name: "Bash" });
+  const ctx = p1.out ? JSON.parse(p1.out).hookSpecificOutput?.additionalContext ?? "" : "";
+  check("PostToolUse chèn tin user mới vào context", ctx.includes("đổi ý: test thêm case mobile"), JSON.stringify(p1));
+  const p2 = await runHook("post", "qa", { tool_name: "Bash" });
+  check("… mỗi tin chỉ chèn một lần", !p2.out, JSON.stringify(p2));
+  const sm = await qa2.call("send_message", { to: "dev", content: "xong phần desktop" });
+  check("tin kèm vào kết quả send_message được đánh dấu 'đọc kỹ, trả lời trước'", sm.text.includes("TRƯỚC khi làm tiếp") && sm.text.includes("đổi ý"), sm.text);
+  await sleep(150);
+  const s9 = await runHook("stop", "qa");
+  check("Stop hook chặn khi còn tin user chưa phản hồi", s9.code === 2 && s9.err.includes("chưa được xử lý") && s9.err.includes("đổi ý"), JSON.stringify(s9));
+  const again = await qa2.call("wait_for_messages", { timeout_seconds: 5 });
+  check("wait_for_messages nhắc lại tin chưa phản hồi ngay", again.text.includes("CHƯA phản hồi") && again.text.includes("đổi ý"), again.text);
+  await qa2.call("send_message", { to: "user", content: "ok, thêm case mobile" });
+  const s10 = await runHook("stop", "qa");
+  check("đã trả lời → Stop hook về luật trực bình thường", s10.code === 2 && !s10.err.includes("chưa được xử lý"), JSON.stringify(s10));
+
+  // ---- Agent chạy ngầm trên hub: xem terminal trên web, đánh thức khi user nhắn ----
+  const evil = await fetch(`${HTTP}/api/rooms/${room}/agents`, { method: "POST", headers: { origin: "http://evil.example" }, body: "{}" });
+  check("trang web lạ không gọi được API chạy agent (origin)", evil.status === 403);
+  const evilWs = await new Promise((ok) => {
+    const w = new WsClient(`ws://127.0.0.1:${port}/ws`, { headers: { origin: "http://evil.example" } });
+    w.onopen = () => ok("open");
+    w.onerror = () => ok("rejected");
+  });
+  check("trang web lạ không mở được WebSocket", evilWs === "rejected", evilWs);
+  const started = await postJson("agents", { launch: { repoDir: tmp }, names: ["qa"] });
+  const qaTerm = started.data.find?.((t) => t.name === "qa");
+  check("POST agents → qa chạy ngầm", started.status === 200 && qaTerm?.running, JSON.stringify(started));
+  check("web nhận danh sách terminal", web.inbox.some((o) => o.op === "terms" && o.terms.some((t) => t.name === "qa" && t.running)));
+  await web.request({ op: "term_attach", name: "qa", cols: 100, rows: 30 });
+  const termText = () => web.inbox.filter((o) => (o.op === "term_data" || o.op === "term_snapshot") && o.name === "qa").map((o) => o.data).join("");
+  for (let i = 0; i < 50 && !termText().includes("FAKE READY"); i++) await sleep(100);
+  check("xem terminal: thấy output của agent", termText().includes("FAKE READY"), JSON.stringify(termText().slice(0, 600)));
+  web.ws.send(JSON.stringify({ op: "term_input", name: "qa", data: "xin chao\r" }));
+  for (let i = 0; i < 30 && !termText().includes("GOT: xin chao"); i++) await sleep(100);
+  check("gõ từ web vào terminal", termText().includes("GOT: xin chao"), JSON.stringify(termText().slice(-200)));
+
+  await postJson("close");
+  await qa2.call("check_inbox");
+  const s11 = await runHook("stop", "qa");
+  check("ticket đóng (đã duyệt) → agent nghỉ ở prompt", s11.code === 0 && (await qaInfo()).idle === true, JSON.stringify(await qaInfo()));
+  await web.request({ op: "send", to: "qa", content: "hỏi thêm: case mobile ra sao?" });
+  for (let i = 0; i < 40 && !termText().includes("GOT: [team-hub] Có tin mới từ user"); i++) await sleep(100);
+  check("user nhắn agent đang nghỉ → hub gõ vào terminal đánh thức", termText().includes("GOT: [team-hub] Có tin mới từ user") && termText().includes("kết thúc lượt"), JSON.stringify(termText().slice(-300)));
+  check("… agent hết trạng thái nghỉ", (await qaInfo()).idle === false, JSON.stringify(await qaInfo()));
+  web.ws.send(JSON.stringify({ op: "term_detach", name: "qa" }));
+  await sleep(100);
+  const listed = await (await fetch(`${HTTP}/api/rooms/${room}/agents`)).json();
+  check("ẩn terminal trên web → agent vẫn chạy ngầm", listed.find((t) => t.name === "qa")?.running === true, JSON.stringify(listed));
+  const stopped = await web.request({ op: "agent_stop", name: "qa" });
+  await sleep(500);
+  const listed2 = await (await fetch(`${HTTP}/api/rooms/${room}/agents`)).json();
+  check("tắt agent từ web", stopped.op === "result" && listed2.find((t) => t.name === "qa")?.running === false, JSON.stringify(listed2));
 
   web.ws.close();
   await devCh.client.close();

@@ -40,6 +40,20 @@ export interface Participant {
   waiting: boolean;
   /** Cần user chú ý ở terminal (vd. chờ duyệt quyền), do hook Claude Code báo lên */
   attention: string | null;
+  /** Session đã kết thúc lượt, đang đứng ở prompt: tin của user sẽ đánh thức nếu terminal chạy trên hub */
+  idle?: boolean;
+}
+
+/** Terminal của agent do hub chạy ngầm (tcm start), xem / gõ từ web */
+export interface TermInfo {
+  name: string;
+  role: string;
+  running: boolean;
+  pid: number | null;
+  startedAt: string;
+  exitCode: number | null;
+  /** Hub đã có cấu hình chạy (từ tcm start/resume): chạy lại được từ web */
+  canStart: boolean;
 }
 
 export interface RoomInfo {
@@ -194,7 +208,17 @@ export type ClientOp =
   /** Bridge báo đang / thôi chờ trong wait_for_messages */
   | { op: "waiting"; waiting: boolean }
   /** Web: bật / tắt chế độ trực của phòng (tắt = cho agent kết thúc lượt) */
-  | { op: "duty"; reqId?: string; onDuty: boolean };
+  | { op: "duty"; reqId?: string; onDuty: boolean }
+  /** Bridge: tin đã kèm vào kết quả tool khác (không phải wait/check_inbox) mà agent chưa phản hồi */
+  | { op: "followup"; ids: number[] }
+  /** Web: xem terminal agent (nhận snapshot rồi stream) / thôi xem (terminal vẫn chạy ngầm) */
+  | { op: "term_attach"; reqId?: string; name: string; cols?: number; rows?: number }
+  | { op: "term_detach"; name: string }
+  | { op: "term_input"; name: string; data: string }
+  | { op: "term_resize"; name: string; cols: number; rows: number }
+  /** Web: chạy (lại) / dừng session agent do hub quản lý */
+  | { op: "agent_start"; reqId?: string; name: string; resume?: boolean }
+  | { op: "agent_stop"; reqId?: string; name: string };
 
 // ---------- hub -> client ----------
 
@@ -206,7 +230,12 @@ export type ServerOp =
   | { op: "board"; room: string; board: Board }
   | { op: "result"; reqId: string; data: unknown }
   | { op: "error"; reqId?: string; error: string }
-  | { op: "kicked"; reason: string };
+  | { op: "kicked"; reason: string }
+  | { op: "terms"; room: string; terms: TermInfo[] }
+  /** Màn hình hiện tại của terminal (gửi khi attach), sau đó là các term_data */
+  | { op: "term_snapshot"; name: string; data: string; cols: number; rows: number }
+  | { op: "term_data"; name: string; data: string }
+  | { op: "term_exit"; name: string; code: number | null };
 
 /**
  * Tin nhắn này có gửi tới `name` không (trực tiếp hoặc broadcast, không phải do chính mình gửi).
@@ -218,14 +247,19 @@ export function isAddressedTo(msg: ChatMessage, name: string): boolean {
 
 /** Body của POST /api/hook, gửi từ scripts/hook.mjs (Claude Code hooks) */
 export interface HookRequest {
-  event: "stop" | "notify" | "clear";
+  /** post = PostToolUse, prompt = UserPromptSubmit */
+  event: "stop" | "notify" | "clear" | "post" | "prompt";
   room: string;
   name: string;
-  input?: { notification_type?: string; message?: string; stop_hook_active?: boolean };
+  /** Session chạy chế độ channel: không giữ trực */
+  channel?: boolean;
+  input?: { notification_type?: string; message?: string; stop_hook_active?: boolean; tool_name?: string };
 }
 export interface HookResponse {
   block?: boolean;
   reason?: string;
+  /** PostToolUse: chèn vào context của agent (tin mới đến trong lúc đang làm) */
+  context?: string;
 }
 
 /** Bước hiện tại + thời gian ở mỗi bước, theo từng participant */

@@ -31,7 +31,7 @@ Không có tool Backlog thì dùng nội dung ticket user dán trong tin kickoff
 - **Ảnh:** truyền đường dẫn file vào \`screenshots\` (report_bug, update_bug, send_message, submit_report), ảnh hiện thẳng trên web.
 - **Vào / vào lại phòng:** gọi \`get_summary\` đầu tiên: thông tin ticket, ai đang ở bước nào, bug, việc tồn đọng của bạn, câu hỏi đang chờ user, tin gần đây. Cần chi tiết hơn thì \`get_history\`.
 - **Báo cáo B7:** gửi bằng \`submit_report\` (không dùng send_message), để hub lưu làm báo cáo của ticket. User duyệt, sửa và đóng ticket trên web. KHÔNG đăng báo cáo hay comment gì lên Backlog.
-- **Đóng ticket:** tin \`hub\` "🏁 User đã đóng ticket" nghĩa là dừng mọi việc và kết thúc lượt.
+- **Đóng ticket:** tin \`hub\` "🏁 User đã duyệt báo cáo và đóng ticket" nghĩa là dừng mọi việc và kết thúc lượt. Sau đó nếu bạn được đánh thức vì user nhắn (dòng \`[team-hub] Có tin mới…\` trong prompt), gọi \`check_inbox\`, xử lý đúng tin đó, trả lời user rồi kết thúc lượt.
 - Tin từ \`hub\` là nhắc nhở của hệ thống (vd. bug đã hết lượt tranh luận, đang trao đổi vòng vo): làm theo.
 
 | Bước | DEV | QA |
@@ -158,6 +158,7 @@ Tên của bạn trong phòng là "${opts.name}". Người dùng thật có tên
 - Chọn \`type\` phù hợp: chat | question | ac_deviation | test_case | bug_report | handoff.
 ${receiving}
 - Trong lúc làm việc dài (code, chạy test), cứ sau vài bước lại gọi \`check_inbox\` để không bỏ lỡ phản hồi quan trọng.
+- **Tin đến giữa chừng:** tin mới có thể nằm trong kết quả của BẤT KỲ tool hub nào (khối 📬), hoặc được chèn sau một tool bất kỳ (dòng \`[team-hub] 📬\`). Gặp là đọc ngay, xử lý và trả lời người gửi trước khi làm tiếp. Đừng gửi báo cáo rồi quay lại chờ hay kết thúc lượt khi còn tin chưa trả lời.
 - Dùng \`set_status\` để cho mọi người biết bạn đang ở bước nào, làm gì.
 - Khi mới vào (hoặc vào lại) phòng: gọi \`get_summary\` để nắm bối cảnh. \`get_history\` khi cần đọc nguyên văn các tin.
 

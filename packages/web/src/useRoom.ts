@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Board, BugStatus, ChatMessage, MessageType, Participant, RoomInfo, ServerOp } from "@tcm/shared";
+import type { Board, BugStatus, ChatMessage, MessageType, Participant, RoomInfo, ServerOp, TermInfo } from "@tcm/shared";
+
+type TermOp = Extract<ServerOp, { op: "term_snapshot" | "term_data" | "term_exit" }>;
+/** Một terminal đang mở trên web: nhận dữ liệu, attach lại khi WebSocket kết nối lại */
+export interface TermSub {
+  onOp: (op: TermOp) => void;
+  attach: () => void;
+}
 
 const EMPTY_BOARD: Board = { steps: [], bugs: [], report: null, reportVersions: 0, closedAt: null, idleChatter: 0, warning: null };
 
@@ -24,6 +31,8 @@ export function useRoom(room: string | null) {
   const [conn, setConn] = useState<ConnState>("connecting");
   const [onDuty, setOnDuty] = useState(true);
   const [board, setBoard] = useState<Board>(EMPTY_BOARD);
+  const [terms, setTerms] = useState<TermInfo[]>([]);
+  const termSubs = useRef(new Map<string, TermSub>());
   const lastId = useRef(0);
   const wsRef = useRef<WebSocket | null>(null);
   const pending = useRef(new Map<string, { resolve: (m: ChatMessage) => void; reject: (e: Error) => void }>());
@@ -33,6 +42,7 @@ export function useRoom(room: string | null) {
     setMessages([]);
     setParticipants([]);
     setBoard(EMPTY_BOARD);
+    setTerms([]);
     lastId.current = 0;
     if (!room) return;
 
@@ -56,6 +66,7 @@ export function useRoom(room: string | null) {
       wsRef.current = ws;
       ws.onopen = async () => {
         ws!.send(JSON.stringify({ op: "hello", kind: "viewer", room }));
+        termSubs.current.forEach((t) => t.attach());
         // Tải lịch sử (lần đầu: 200 tin gần nhất; reconnect: tin mới hơn lastId)
         const q = lastId.current ? `sinceId=${lastId.current}&limit=500` : "limit=200";
         const res = await fetch(`/api/rooms/${encodeURIComponent(room)}/messages?${q}`);
@@ -69,6 +80,8 @@ export function useRoom(room: string | null) {
         else if (op.op === "room") setOnDuty(op.onDuty);
         else if (op.op === "participants") setParticipants(op.participants);
         else if (op.op === "board") setBoard(op.board);
+        else if (op.op === "terms") setTerms(op.terms);
+        else if (op.op === "term_snapshot" || op.op === "term_data" || op.op === "term_exit") termSubs.current.get(op.name)?.onOp(op);
         else if (op.op === "result" || op.op === "error") {
           const p = op.reqId ? pending.current.get(op.reqId) : undefined;
           if (!p) return;
@@ -114,7 +127,28 @@ export function useRoom(room: string | null) {
     [request],
   );
 
-  return { messages, participants, conn, send, onDuty, setDuty, board, updateBug };
+  /** Gửi op không cần trả lời (gõ phím, đổi kích thước terminal) */
+  const raw = useCallback((op: Record<string, unknown>) => {
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(op));
+  }, []);
+
+  /** Mở terminal `name` trên web; trả về hàm đóng (session vẫn chạy ngầm trên hub) */
+  const openTerm = useCallback(
+    (name: string, sub: TermSub) => {
+      termSubs.current.set(name, sub);
+      sub.attach();
+      return () => {
+        if (termSubs.current.get(name) === sub) termSubs.current.delete(name);
+        raw({ op: "term_detach", name });
+      };
+    },
+    [raw],
+  );
+  const startAgent = useCallback((name: string) => request<boolean>({ op: "agent_start", name }), [request]);
+  const stopAgent = useCallback((name: string) => request<boolean>({ op: "agent_stop", name }), [request]);
+
+  return { messages, participants, conn, send, onDuty, setDuty, board, updateBug, terms, raw, openTerm, startAgent, stopAgent };
 }
 
 export function useRooms(intervalMs = 5000) {

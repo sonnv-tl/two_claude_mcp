@@ -83,9 +83,12 @@ try {
   const qa = await fakeAgent("qa");
   const s = await startP;
   check("start chạy xong (exit 0)", s.code === 0, s.out);
-  check("dry-run in lệnh wt với 2 pane DEV | QA", /wt\.exe -w tcm-TL-1 new-tab .*DEV · TL-1.* ; split-pane -V .*QA · TL-1/.test(s.out), s.out);
-  check("pane DEV có --model sonnet, QA có -NoBrowser", s.out.includes("-Model sonnet") && s.out.includes("-NoBrowser"), s.out);
-  check("cả 2 pane chạy với -SkipPermissions", (s.out.match(/-SkipPermissions/g) || []).length === 2, s.out);
+  check("mặc định: DEV + QA chạy ngầm trên hub (dry-run in cấu hình gửi hub)",
+    s.out.includes("[dry-run] POST /api/rooms/TL-1/agents") && s.out.includes('"model":"sonnet"') && s.out.includes('"browser":false') && s.out.includes('"resume":false'), s.out);
+  const w = await tcm("start", "TL-1", "--wt", "--dry-run", "--no-open", "--manual");
+  check("--wt: dry-run in lệnh wt với 2 pane DEV | QA", /wt\.exe -w tcm-TL-1 new-tab .*DEV · TL-1.* ; split-pane -V .*QA · TL-1/.test(w.out), w.out);
+  check("--wt: pane DEV có --model sonnet, QA có -NoBrowser", w.out.includes("-Model sonnet") && w.out.includes("-NoBrowser"), w.out);
+  check("--wt: cả 2 pane chạy với -SkipPermissions", (w.out.match(/-SkipPermissions/g) || []).length === 2, w.out);
   check("start không thêm trùng dòng exclude", readFileSync(join(repo, ".git", "info", "exclude"), "utf8") === excl);
   check("start báo đã gửi kickoff", s.out.includes("đã gửi kickoff"), s.out);
   await sleep(300);
@@ -112,14 +115,18 @@ try {
   const rs = await tcmIn(tmp, "resume", "TL-1", "--dry-run", "--no-open");
   check("tcm resume ngoài repo → dùng repo đã lưu", rs.code === 0 && rs.out.includes("repo đã lưu"), rs.out);
   check("resume in tóm tắt phòng (trạng thái đóng, báo cáo)", rs.out.includes("Tóm tắt phòng") && rs.out.includes("ĐÃ ĐÓNG") && rs.out.includes("Phiên bản 1"), rs.out);
-  check("resume mở lại ticket + 2 pane chạy -Resume", rs.out.includes("mở lại") && (rs.out.match(/-Resume/g) || []).length === 2 && rs.out.includes(`-d ${repo}`), rs.out);
+  check("resume mở lại ticket + chạy ngầm DEV/QA ở repo đã lưu (resume)",
+    rs.out.includes("mở lại") && rs.out.includes('"resume":true') && rs.out.includes(JSON.stringify(resolve(repo)).slice(1, -1)), rs.out);
   const r1 = (await (await fetch(`${HUB}/api/rooms`)).json()).find((r) => r.name === "TL-1");
   check("sau resume: hết closedAt, bật trực", r1.closedAt === null && r1.onDuty === true, JSON.stringify(r1));
   const nope = await tcm("resume", "KHONG-CO");
   check("resume phòng không tồn tại → gợi ý tcm start", nope.code === 1 && nope.out.includes("tcm start KHONG-CO"), nope.out);
   const vs = await tcm("vscode");
   const tasks = JSON.parse(readFileSync(join(repo, ".vscode", "tasks.json"), "utf8")).tasks;
-  check("tcm vscode có task resume ticket (DEV/QA chạy -Resume)", vs.code === 0 && tasks.some((t) => t.label === "tcm: resume ticket") && tasks.find((t) => t.label === "tcm: DEV (resume)")?.command.includes("-Resume") && !tasks.find((t) => t.label === "tcm: DEV").command.includes("-Resume"), JSON.stringify(tasks.map((t) => t.label)));
+  check("tcm vscode: task start / resume ticket gọi tcm (agent chạy ngầm, không mở terminal trong VS Code)",
+    vs.code === 0 && tasks.length === 2 && tasks.find((t) => t.label === "tcm: start ticket")?.command.includes(" start ${input:tcmTicket}") &&
+      tasks.find((t) => t.label === "tcm: resume ticket")?.command.includes(" resume ${input:tcmTicket}"),
+    JSON.stringify(tasks));
 
   const bad = await tcm("start", "bad room!");
   check("tên phòng không hợp lệ → báo lỗi", bad.code === 1 && bad.out.includes("không hợp lệ"), bad.out);

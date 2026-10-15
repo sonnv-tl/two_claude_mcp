@@ -184,6 +184,10 @@ export class HubClient extends EventEmitter {
     this.raw({ op: "ack", upToId });
   }
 
+  setFollowUp(ids: number[]) {
+    this.raw({ op: "followup", ids });
+  }
+
   sendMessage(m: { to: string; content: string; type?: ChatMessage["type"]; replyTo?: number | null }) {
     return this.request<ChatMessage>({ op: "send", ...m });
   }

@@ -246,3 +246,48 @@ button.link { background: none; border: 0; padding: 0 4px; color: var(--c-dev); 
 }
 .report-view { min-height: 200px; }
 .notice { color: var(--c-user); white-space: pre-wrap; word-break: break-all; }
+
+/* ---------- terminal agent chạy ngầm trên hub ---------- */
+.term-dock {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  height: 46vh;
+  min-height: 180px;
+  resize: vertical;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border, #2a2d33);
+}
+.term-panel {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border, #2a2d33);
+  border-radius: 6px;
+  background: #14161a;
+  overflow: hidden;
+}
+.term-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #ccc;
+}
+.term-head .spacer {
+  flex: 1;
+}
+.term-box {
+  flex: 1;
+  min-height: 0;
+  padding: 4px;
+}
+.term-btn {
+  cursor: pointer;
+  margin-left: 4px;
+}
+.term-btn.on {
+  outline: 1px solid currentColor;
+}

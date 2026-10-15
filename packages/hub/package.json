@@ -10,7 +10,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@lydell/node-pty": "^1.2.0-beta.15",
     "@tcm/shared": "0.1.0",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/headless": "^6.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

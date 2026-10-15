@@ -64,7 +64,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node C:/laragon/www/two_claude_mcp/scripts/hook.mjs clear",
+            "command": "node C:/laragon/www/two_claude_mcp/scripts/hook.mjs post",
             "timeout": 10
           }
         ]
@@ -75,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node C:/laragon/www/two_claude_mcp/scripts/hook.mjs clear",
+            "command": "node C:/laragon/www/two_claude_mcp/scripts/hook.mjs prompt",
             "timeout": 10
           }
         ]

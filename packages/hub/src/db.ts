@@ -71,6 +71,7 @@ export class Store {
     if (!cols.some((c) => c.name === "closed_at")) this.db.exec("ALTER TABLE rooms ADD COLUMN closed_at TEXT");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS room_meta (room TEXT PRIMARY KEY, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS room_launch (room TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS steps (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         room TEXT NOT NULL, name TEXT NOT NULL, step TEXT NOT NULL, at TEXT NOT NULL
@@ -245,6 +246,19 @@ export class Store {
     this.db
       .prepare("INSERT INTO room_meta (room, json) VALUES (?, ?) ON CONFLICT (room) DO UPDATE SET json = excluded.json")
       .run(room, JSON.stringify(meta));
+  }
+
+  /** Cấu hình chạy agent của phòng (repo + .team-hub.json agents), để hub / web chạy lại session */
+  getLaunch(room: string): Record<string, unknown> | null {
+    const r = this.db.prepare("SELECT json FROM room_launch WHERE room = ?").get(room) as { json: string } | undefined;
+    return r ? (JSON.parse(r.json) as Record<string, unknown>) : null;
+  }
+
+  setLaunch(room: string, launch: Record<string, unknown>): void {
+    this.ensureRoom(room);
+    this.db
+      .prepare("INSERT INTO room_launch (room, json) VALUES (?, ?) ON CONFLICT (room) DO UPDATE SET json = excluded.json")
+      .run(room, JSON.stringify(launch));
   }
 
   isOnDuty(room: string): boolean {

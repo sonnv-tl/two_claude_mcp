@@ -160,17 +160,17 @@ export function ReportDialog({
             <button
               className="send"
               disabled={busy}
-              title="Lưu báo cáo, tắt trực, agent dừng việc và kết thúc lượt"
+              title="Duyệt báo cáo: lưu, đóng ticket, tắt trực. Agent kết thúc lượt; nhắn cho agent thì nó được đánh thức."
               onClick={() =>
                 void run(async () => {
                   if (!text.trim() && !confirm("Chưa có báo cáo B7. Vẫn đóng ticket?")) return;
                   await post(room, "close", dirty ? { report: text } : {});
                   setEditing(false);
-                  return "Đã đóng ticket. Agent sẽ kết thúc lượt. Vào lại: tcm resume.";
+                  return "Đã duyệt và đóng ticket. Agent kết thúc lượt, không trực nữa. Cần gì thì cứ nhắn: agent chạy ngầm trên hub sẽ được đánh thức.";
                 })
               }
             >
-              {dirty ? "Lưu & đóng ticket" : "Đóng ticket"}
+              {dirty ? "✅ Lưu, duyệt & đóng ticket" : text.trim() ? "✅ Duyệt & đóng ticket" : "Đóng ticket"}
             </button>
           )}
         </footer>

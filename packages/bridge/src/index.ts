@@ -139,16 +139,52 @@ function fmtParticipants(ps: Participant[]): string {
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
+/**
+ * Tin chỉ được kèm vào kết quả của tool khác (send_message, set_status…), agent dễ đọc lướt rồi bỏ qua.
+ * Giữ lại tới khi agent nhắn cho người gửi; wait_for_messages / check_inbox nhắc lại một lần, Stop hook cũng chặn.
+ */
+let followUp: ChatMessage[] = [];
+
+function syncFollowUp() {
+  hub.setFollowUp(followUp.map((m) => m.id));
+}
+
+/** Agent vừa nhắn cho `to` → coi như đã phản hồi các tin của người đó */
+function answered(to: string, replyTo?: number | null) {
+  const before = followUp.length;
+  followUp = followUp.filter((m) => !(to === BROADCAST || m.from === to || m.id === replyTo));
+  if (followUp.length !== before) syncFollowUp();
+}
+
+/** Lấy các tin cần nhắc lại (và xoá khỏi danh sách) */
+function takeFollowUp(): string | null {
+  if (!followUp.length) return null;
+  const list = followUp;
+  followUp = [];
+  syncFollowUp();
+  return (
+    `⚠️ Nhắc lại ${list.length} tin bạn CHƯA phản hồi (đã kèm ở kết quả một tool trước đó, có thể bạn đã bỏ sót). ` +
+    `Xử lý và trả lời người gửi bằng send_message:\n\n${list.map(fmtMessage).join("\n\n---\n\n")}`
+  );
+}
+
 /** Mọi tool result đều kèm tin mới (nếu có), để agent không bỏ lỡ phản hồi. */
-function result(text: string, opts: { isError?: boolean; attachInbox?: boolean } = {}): ToolResult {
+function result(text: string, opts: { isError?: boolean; attachInbox?: boolean; inboxTool?: boolean } = {}): ToolResult {
   const content: ToolResult["content"] = [{ type: "text", text }];
   if (opts.attachInbox !== false) {
     const news = drain();
     if (news.length) {
       content.push({
         type: "text",
-        text: `📬 ${news.length} tin mới:\n\n${news.map(fmtMessage).join("\n\n---\n\n")}`,
+        text: opts.inboxTool
+          ? `📬 ${news.length} tin mới:\n\n${news.map(fmtMessage).join("\n\n---\n\n")}`
+          : `📬 ${news.length} tin MỚI gửi bạn (đến trong lúc bạn đang làm việc). Đọc kỹ, xử lý và trả lời người gửi TRƯỚC khi làm tiếp:\n\n` +
+            news.map(fmtMessage).join("\n\n---\n\n"),
       });
+      if (!opts.inboxTool) {
+        followUp.push(...news.filter((m) => m.from !== "hub"));
+        syncFollowUp();
+      }
     }
   }
   return { content, isError: opts.isError };
@@ -210,6 +246,7 @@ server.registerTool(
         type: type as ChatMessage["type"] | undefined,
         replyTo: reply_to ?? null,
       });
+      answered(msg.to, reply_to);
       return result(`Đã gửi #${msg.id} tới ${msg.to}.${warnings}`);
     }),
 );
@@ -227,6 +264,8 @@ server.registerTool(
   },
   ({ timeout_seconds }, extra) =>
     guard(async () => {
+      const again = takeFollowUp();
+      if (again) return result(again, { inboxTool: true });
       if (!hub.connected && !inbox.length) {
         return result(`Chưa kết nối được hub (${url}). ${hub.lastError ?? ""}`.trim(), { isError: true });
       }
@@ -236,6 +275,7 @@ server.registerTool(
           hub.ticketClosed
             ? "User đã ĐÓNG ticket. Dừng mọi việc, không gửi thêm tin, KẾT THÚC LƯỢT (không gọi wait_for_messages nữa)."
             : "User đã TẮT chế độ trực trên web. Hãy hoàn tất việc đang làm dở (nếu có), gửi user tóm tắt ngắn nếu cần, rồi KẾT THÚC LƯỢT (không gọi wait_for_messages nữa).",
+          { inboxTool: true },
         );
       if (!hub.onDuty && !inbox.length) return offDuty();
       hub.setWaiting(true);
@@ -252,9 +292,10 @@ server.registerTool(
                 "nếu không còn việc, cứ kết thúc lượt: tin mới sẽ được đẩy tới."
             : `Không có tin mới sau ${secs}s. Gọi lại wait_for_messages ngay để tiếp tục chờ ` +
                 "(đừng kết thúc lượt, nếu không bạn sẽ không nhận được tin từ đồng đội / user).",
+          { inboxTool: true },
         );
       }
-      return result("Có tin mới:");
+      return result("Có tin mới:", { inboxTool: true });
     }),
 );
 
@@ -267,8 +308,11 @@ server.registerTool(
   },
   () =>
     guard(async () => {
-      if (!inbox.length) return result(hub.connected ? "Không có tin mới." : `Chưa kết nối được hub (${url}).`);
-      return result("Hộp thư:");
+      const again = takeFollowUp();
+      if (!inbox.length) return result(again ?? (hub.connected ? "Không có tin mới." : `Chưa kết nối được hub (${url}).`), { inboxTool: true });
+      return result(again ? `${again}
+
+Hộp thư:` : "Hộp thư:", { inboxTool: true });
     }),
 );
 
@@ -343,6 +387,7 @@ server.registerTool(
     guard(async () => {
       const { urls, warnings } = await uploadAll(screenshots);
       const { bug, message } = await hub.createBug({ title, severity, tc, detail, to, attachments: urls });
+      answered(message.to);
       return result(`Đã tạo ${bug.code} (#${message.id}) gửi ${message.to}.${warnings}`);
     }),
 );
@@ -366,6 +411,7 @@ server.registerTool(
     guard(async () => {
       const { urls, warnings } = await uploadAll(screenshots);
       const { bug, message, escalated } = await hub.updateBug({ code, status, note, attachments: urls });
+      answered(message.to);
       return result(
         escalated
           ? `${bug.code} đã hết lượt tranh luận → chuyển "chờ user phân xử". Dừng tranh luận bug này, làm việc khác và chờ user.${warnings}`
@@ -413,6 +459,7 @@ server.registerTool(
     guard(async () => {
       const { urls, warnings } = await uploadAll(screenshots);
       const { message, version } = await hub.submitReport(content, urls);
+      answered(message.to);
       return result(`Đã gửi báo cáo B7 cho user (#${message.id}, phiên bản ${version}). Chờ user duyệt.${warnings}`);
     }),
 );

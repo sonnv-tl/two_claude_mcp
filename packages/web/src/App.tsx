@@ -6,6 +6,7 @@ import { useRoom, useRooms, type OutgoingMessage } from "./useRoom";
 import { KickoffDialog } from "./KickoffDialog";
 import { BugPanel, Stepper } from "./Board";
 import { ReportDialog } from "./ReportDialog";
+import { TerminalPanel } from "./TerminalPanel";
 
 const HUMAN = "user";
 const USER_TYPES: MessageType[] = ["chat", "question", "handoff"];
@@ -81,10 +82,40 @@ function useHashRoom(): [string | null, (r: string) => void] {
   return [room, (r) => (location.hash = `/${encodeURIComponent(r)}`)];
 }
 
+/** Terminal đang mở trên web, nhớ theo phòng (localStorage) */
+function useOpenTerms(room: string | null): [string[], (name: string, open?: boolean) => void] {
+  const key = `tcm.terms.${room}`;
+  const read = () => {
+    try {
+      return JSON.parse(localStorage.getItem(key) ?? "[]") as string[];
+    } catch {
+      return [];
+    }
+  };
+  const [open, setOpen] = useState<string[]>(read);
+  useEffect(() => setOpen(read()), [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  const toggle = (name: string, want?: boolean) =>
+    setOpen((cur) => {
+      const on = want ?? !cur.includes(name);
+      const next = on ? (cur.includes(name) ? cur : [...cur, name]) : cur.filter((n) => n !== name);
+      try {
+        localStorage.setItem(key, JSON.stringify(next));
+      } catch {
+        /* bỏ qua */
+      }
+      return next;
+    });
+  return [open, toggle];
+}
+
 export function App() {
   const rooms = useRooms();
   const [room, setRoom] = useHashRoom();
-  const { messages, participants, conn, send, onDuty, setDuty, board, updateBug } = useRoom(room);
+  const { messages, participants, conn, send, onDuty, setDuty, board, updateBug, terms, raw, openTerm, startAgent, stopAgent } = useRoom(room);
+  const [openTerms, toggleTerm] = useOpenTerms(room);
+  const termOf = (name: string) => terms.find((t) => t.name === name);
+  const shownTerms = openTerms.filter((n) => termOf(n));
+  const act = (p: Promise<unknown>) => void p.catch((e) => alert(e instanceof Error ? e.message : String(e)));
   const [tab, setTab] = useState<"people" | "bugs">("people");
   const openBugs = board.bugs.filter((b) => ["open", "reopened", "fixed", "disputed", "need_user"].includes(b.status)).length;
   const needUser = board.bugs.some((b) => b.status === "need_user");
@@ -182,6 +213,23 @@ export function App() {
           </div>
         </header>
         <Stepper board={board} colorOf={(n) => colorOf(n, participants)} />
+        {shownTerms.length > 0 && conn === "open" && (
+          <div className="term-dock">
+            {shownTerms.map((n) => (
+              <TerminalPanel
+                key={`${room}/${n}`}
+                name={n}
+                info={termOf(n)}
+                color={colorOf(n, participants)}
+                openTerm={openTerm}
+                raw={raw}
+                onStart={() => act(startAgent(n))}
+                onStop={() => act(stopAgent(n))}
+                onClose={() => toggleTerm(n, false)}
+              />
+            ))}
+          </div>
+        )}
         <MessageList messages={visible} byId={byId} participants={participants} onReply={setReplyTo} />
         <Composer
           key={room ?? ""}
@@ -207,6 +255,19 @@ export function App() {
         {tab === "bugs" && (
           <BugPanel board={board} participants={participants} onJump={jump} onUpdate={updateBug} disabled={conn !== "open"} />
         )}
+        {tab === "people" && terms.some((t) => !participants.some((p) => p.name === t.name)) && (
+          <div className="person">
+            <span className="dot" />
+            <div className="small muted">
+              Chạy ngầm, chưa vào phòng:{" "}
+              {terms.filter((t) => !participants.some((p) => p.name === t.name)).map((t) => (
+                <button key={t.name} className={`chip term-btn ${openTerms.includes(t.name) ? "on" : ""}`} onClick={() => toggleTerm(t.name)}>
+                  🖥 {t.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {tab === "people" && participants.map((p) => (
           <div key={p.name} className={`person ${p.attention ? "alert" : ""}`}>
             <span className={`dot ${p.online ? "on" : ""}`} />
@@ -215,7 +276,21 @@ export function App() {
                 <strong style={{ color: colorOf(p.name, participants) }}>{p.name}</strong>{" "}
                 <span className="muted small">{p.role || p.kind}</span>
                 {p.online && p.kind === "agent" && (
-                  <span className={`chip ${p.waiting ? "idle" : "busy"}`}>{p.waiting ? "chờ việc" : "đang làm"}</span>
+                  <span
+                    className={`chip ${p.waiting || p.idle ? "idle" : "busy"}`}
+                    title={p.idle ? "Đã kết thúc lượt. Nhắn cho nó: hub tự đánh thức nếu terminal chạy ngầm trên hub" : undefined}
+                  >
+                    {p.waiting ? "chờ việc" : p.idle ? "nghỉ" : "đang làm"}
+                  </span>
+                )}
+                {termOf(p.name) && (
+                  <button
+                    className={`chip term-btn ${openTerms.includes(p.name) ? "on" : ""}`}
+                    title={openTerms.includes(p.name) ? "Ẩn terminal (session vẫn chạy ngầm)" : "Xem terminal của agent"}
+                    onClick={() => toggleTerm(p.name)}
+                  >
+                    🖥 {termOf(p.name)!.running ? "" : "tắt"}
+                  </button>
                 )}
               </div>
               {p.attention && <div className="small attention">{p.attention}</div>}
