@@ -22,7 +22,7 @@ function manualRepo(path: string, distro: string): RepoRef | null {
 }
 
 /**
- * Mở ticket mới, giống task "tcm: start ticket" trong VS Code: nhập mã ticket + link Figma,
+ * Mở ticket mới, giống task "tcm: start ticket" trong VS Code: nhập mã ticket,
  * hub đọc .team-hub.json của repo, chạy ngầm DEV + QA rồi gửi kickoff.
  */
 export function NewRoomDialog({ rooms, onClose, onCreated }: { rooms: RoomInfo[]; onClose: () => void; onCreated: (room: string) => void }) {
@@ -31,7 +31,6 @@ export function NewRoomDialog({ rooms, onClose, onCreated }: { rooms: RoomInfo[]
   const [pick, setPick] = useState("");
   const [manual, setManual] = useState({ path: "", distro: "Ubuntu" });
   const [ticket, setTicket] = useState("");
-  const [figma, setFigma] = useState("");
   const [room, setRoom] = useState("");
   const [account, setAccount] = useState("");
   const [notes, setNotes] = useState("");
@@ -70,7 +69,6 @@ export function NewRoomDialog({ rooms, onClose, onCreated }: { rooms: RoomInfo[]
       const body: StartTicketRequest = {
         ticket: ticket.trim(),
         room: roomName,
-        figma: figma.trim() || undefined,
         testAccount: account.trim() || undefined,
         notes: notes.trim() || undefined,
         repo: { repoDir: repo.repoDir, wslCwd: repo.wslCwd, distro: repo.distro },
@@ -116,16 +114,6 @@ export function NewRoomDialog({ rooms, onClose, onCreated }: { rooms: RoomInfo[]
           <span>Mã ticket</span>
           <input className="field" value={ticket} placeholder="TLPORTAL-10182" onChange={(e) => setTicket(e.target.value)} disabled={busy} />
           {!nameOk && <span className="form-error">Tên phòng chỉ gồm chữ, số, _ . - (tối đa 40 ký tự)</span>}
-        </label>
-        <label className="field-label">
-          <span>Link Figma</span>
-          <input
-            className="field"
-            value={figma}
-            placeholder={picked?.figma ? `Mặc định: ${picked.figma}` : "Để trống = dùng link trong ticket"}
-            onChange={(e) => setFigma(e.target.value)}
-            disabled={busy}
-          />
         </label>
         <label className="field-label">
           <span>Repo</span>

@@ -4,7 +4,6 @@ import { dirname, join, parse as parsePath, resolve } from "node:path";
 import type { AgentLaunch } from "./terminals.js";
 
 export interface RepoConfig {
-  figma?: string;
   testAccount?: string;
   notes?: string;
   app?: { run?: string; url?: string };

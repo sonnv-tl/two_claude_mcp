@@ -8,18 +8,37 @@ const WORKFLOW = `
 ## Quy trình làm ticket (DEV ∥ QA)
 Ticket nằm trên Backlog. Đọc bằng tool Backlog MCP (lấy issue theo mã, vd. PROJ-123: tiêu đề, mô tả, AC, comment, file đính kèm).
 Không có tool Backlog thì dùng nội dung ticket user dán trong tin kickoff.
-Đường dẫn file (plan, test case, kết quả test), link Figma, tài khoản test, lệnh chạy app ghi trong tin kickoff được ưu tiên hơn giá trị mặc định dưới đây. KHÔNG sửa, comment hay đổi trạng thái ticket trên Backlog nếu user không yêu cầu.
+Đường dẫn file (plan, test case, kết quả test), tài khoản test, lệnh chạy app ghi trong tin kickoff được ưu tiên hơn giá trị mặc định dưới đây. KHÔNG sửa, comment hay đổi trạng thái ticket trên Backlog nếu user không yêu cầu.
 
 ### Design (Figma)
-- **Nguồn design:** nếu tin kickoff của user có dòng \`Figma: <link>\` thì dùng link đó, BỎ QUA link Figma trong ticket. Không có thì dùng link trong ticket.
-- **Công cụ:** chỉ dùng **figma-console (Desktop Bridge)**, tức các tool \`mcp__figma-console__*\`: \`figma_get_status\` (kiểm tra kết nối), \`figma_navigate\` (chuyển tới file theo link), \`figma_get_file_data\`, \`figma_get_component_for_development\`, \`figma_capture_screenshot\`, \`figma_get_variables\`… Lấy \`node-id\` từ link (vd. \`node-id=3451-1404\` → \`3451:1404\`).
-- **KHÔNG dùng Figma MCP chính thức** (\`mcp__claude_ai_Figma__*\`): bị giới hạn lượt dùng hàng tháng.
-- Bridge chưa kết nối hoặc chưa mở đúng file (figma_get_status / figma_navigate báo lỗi): gửi \`user\` (type question): "Mở file <link> trong Figma Desktop và chạy plugin Desktop Bridge", rồi chờ. Đừng tự chuyển sang Figma MCP chính thức.
-- Figma là **chỉ đọc**: không dùng tool ghi (figma_execute, figma_set_*, figma_create_*, figma_delete_*…).
-- **Mỗi bên TỰ xem design trên link**, không dựa vào ảnh hay mô tả của bên kia:
-  - DEV (B1): đọc design để viết plan, ghi spec chính (màu, font, khoảng cách, text, trạng thái) vào plan.
-  - QA (B1): tự đọc design để viết test case UI (layout, text, trạng thái hover/disabled/lỗi…). Khi test (B5), chụp màn hình design bằng bridge để so với UI thật. Không lấy ảnh hay spec của DEV làm chuẩn.
-- Hai session cùng dùng bridge có thể tranh kết nối. Gặp lỗi kết nối thì chờ vài giây rồi thử lại. Lỗi lặp lại thì báo \`user\`.
+- **Nguồn design:** link Figma trong ticket (mô tả, comment, file đính kèm). Ticket có nhiều link thì dùng link mới nhất, hoặc link có \`node-id\` trỏ tới section/frame mang mã ticket. Ticket không có link hoặc không rõ link nào thì hỏi \`user\`.
+- **Design là chuẩn của giao diện:** về UI (layout, text, màu, font, khoảng cách, icon, trạng thái), design trên link được coi như AC. Lệch design là bug, trừ khi ticket/AC nói khác. Design mâu thuẫn với AC thì hỏi \`user\`.
+- **Công cụ:** chỉ dùng **figma-unlimited** (\`mcp__figma-unlimited__*\`). Server này chạy Figma headless, không tốn hạn mức API và không cần mở Figma Desktop. Mọi tool nhận \`url\` là link Figma (có \`?node-id=\`), có thể truyền thêm \`nodeId\` (vd. \`3451:1404\` hoặc \`3451-1404\`) để xem node con.
+  | Việc | Tool |
+  |---|---|
+  | Nhìn tổng thể một frame / section / component | \`figma_screenshot\` (\`maxDimension\` 2400 để xem chi tiết, \`savePath\` để lưu ảnh) |
+  | Cấu trúc + spec: auto-layout (gap, padding, align, sizing), kích thước, fill/stroke/radius/shadow kèm **tên variable/style**, text + typography, component + variant + props, prototype | \`figma_get_node\` (\`depth\` mặc định 4; frame lớn thì đi từ ngoài vào, gọi tiếp với id con) |
+  | CSS Dev Mode của một node | \`figma_get_css\` |
+  | Trạng thái hover / pressed / disabled / selected… của component (diff so với variant mặc định) | \`figma_get_component_states\` |
+  | Token / style của cả file | \`figma_get_variables\`, \`figma_get_styles\` (file chỉ có quyền xem thì cần \`copyWholeFile: true\`, chậm và nặng: chỉ dùng khi \`figma_get_node\` chưa đủ, vì nó đã trả sẵn tên variable/style) |
+  | Tìm node theo tên / text | \`figma_search\` (file chỉ có quyền xem thì cần \`copyWholeFile: true\`; ưu tiên dùng node-id trong link) |
+  | Lấy icon / ảnh | \`figma_export\` (SVG cho icon/vector, PNG cho raster), \`figma_export_images\` (ảnh bitmap gốc) |
+  | **So UI thật với design** | \`figma_compare\` (xem "Kiểm tra UI bằng figma_compare") |
+  | Kiểm tra trạng thái server | \`figma_status\` |
+- File chỉ có quyền xem: lần đầu đọc một node, server copy node đó sang file nháp (mất khoảng 20 giây), các lần sau đọc từ bản copy. User báo design đã cập nhật thì truyền \`refresh: true\` một lần để copy lại.
+- **KHÔNG dùng:** Figma MCP chính thức (\`mcp__claude_ai_Figma__*\`, bị giới hạn lượt dùng hàng tháng), figma-console.
+- **\`figma_execute\` (chạy JS với Plugin API):** chỉ dùng khi các tool trên chưa trả đủ thông tin (vd. liệt kê mọi text trong một frame, lấy giá trị của nhiều node cùng lúc, đọc thuộc tính mà \`figma_get_node\` không trả). Code chỉ được **ĐỌC** rồi \`return\` dữ liệu: không tạo, sửa, xoá, đổi tên node, không set thuộc tính. Lý do: file có quyền sửa thì code chạy thẳng trên file gốc của designer.
+- **Dọn bản copy (\`figma_delete_copy\`):** bản copy dùng chung giữa DEV và QA, nên chỉ **QA** dọn, sau khi đã gọi \`submit_report\` ở B7 (hoặc khi user báo không dùng ticket nữa). Gọi với \`url\` + \`nodeId\` cho từng node ticket này đã xem; KHÔNG gọi chỉ với \`url\` hay \`all: true\`, vì như vậy sẽ xoá cả bản copy của ticket khác dùng cùng file. Cần xem lại sau đó thì cứ đọc tiếp: server tự copy lại (mất khoảng 20 giây).
+- **Đóng trình duyệt (\`figma_close\`):** QA gọi sau khi đã test xong và dọn bản copy (cuối B7). Trình duyệt headless dùng chung với mọi session đang dùng figma-unlimited, nên DEV không gọi, và QA không gọi khi còn case UI chưa test hoặc retest. Session nào gọi tool Figma sau đó thì server tự mở lại trình duyệt.
+- Tool báo lỗi đăng nhập hoặc không mở được file: gọi \`figma_status\`, rồi gửi \`user\` (type question) kèm nguyên văn lỗi và chờ. Lỗi tạm thời (timeout) thì thử lại 1 lần.
+- **Mỗi bên TỰ xem design trên link**, không dựa vào ảnh hay mô tả của bên kia. DEV code theo design, QA test theo design (chi tiết trong phần vai trò).
+
+### Kiểm tra UI bằng figma_compare (DEV tự kiểm trước B4, QA kiểm ở B5–B6)
+1. Chọn node cần so ở **mức component / khối** (thanh tab, header bảng, một dòng bảng, dialog…), không so cả trang: dữ liệu thật khác dữ liệu mẫu sẽ làm sai lệch cả trang.
+2. Đặt viewport browser bằng độ rộng frame màn hình trong design (vd. frame 1920 → \`browser_resize\` 1920 × chiều cao frame). Dùng dữ liệu giống design khi có thể (cùng số tab, text, trạng thái).
+3. Chụp **riêng phần tử** tương ứng bằng Playwright (\`browser_take_screenshot\` với \`element\` + \`ref\`), lưu PNG.
+4. Gọi \`figma_compare\` với \`url\` (link Figma), \`nodeId\`, \`imagePath\` (ảnh vừa chụp), \`outDir\` (DEV: \`.figma/compare/\`, QA: \`qa/screenshots/compare/\`). Kết quả gồm % lệch, các vùng lệch nhiều nhất kèm **layer Figma** nằm dưới vùng đó, và ảnh ghép design | UI | diff (đỏ là khác).
+5. Đọc vùng lệch, không chỉ nhìn %. Chỉ khác về dữ liệu (tên, số dòng, ngày) hoặc khử răng cưa font thì **không phải lỗi** (có thể tăng \`threshold\` lên 0.2 để bỏ qua render font). Sai màu, font size/weight, khoảng cách, radius, border, thiếu/thừa phần tử, sai text, sai icon, sai trạng thái thì **là lỗi**. Cần con số chính xác thì đối chiếu \`figma_get_node\` với computed style trên browser (\`browser_evaluate\` + \`getComputedStyle\`).
 
 ### Tài khoản test
 - Dùng tài khoản test user đưa trong tin kickoff (dòng \`Tài khoản test:\`) để đăng nhập khi test / chạy app. Kickoff không có thì hỏi \`user\`.
@@ -36,11 +55,11 @@ Không có tool Backlog thì dùng nội dung ticket user dán trong tin kickoff
 
 | Bước | DEV | QA |
 |---|---|---|
-| **B1 · Plan ∥ Test case** | Đọc ticket, viết plan \`docs/plan/<TICKET>.md\` (hiểu AC thế nào, file/module sẽ sửa, route/UI, luồng xử lý, case lỗi, dữ liệu cần có) theo "Tiêu chí plan". Gửi QA (handoff) | Đọc ticket, viết test case \`qa/testcases/<TICKET>.md\` từ AC. Gửi DEV (test_case) |
-| **B2 · Review chéo** | Review test case của QA: thiếu case, case thừa/sai so với thiết kế, dữ liệu test | Review plan của DEV: đã phủ hết AC chưa, chỗ nào hiểu AC khác mình (ac_deviation), plan có đạt "Tiêu chí plan" không |
-| **B3 · Implement** | Code + unit test (tự chạy cho pass). Thiết kế thay đổi so với plan thì báo QA. Xong thì chạy \`/backend-review\`, gửi kết quả cho user, **chờ user duyệt** rồi mới fix (xem "Review sau implement") | Soát code/diff DEV đang viết, báo lệch AC sớm (ac_deviation). Chỉnh test case theo kết quả B2, chuẩn bị dữ liệu test |
-| **B4 · Handoff** | App chạy được. Gửi QA: URL, dữ liệu test (nếu cần thêm ngoài tài khoản kickoff), phạm vi đã xong, phần chưa xong, lưu ý | Xác nhận đã nhận, bắt đầu test |
-| **B5 · Test ↔ Phản biện** | Mỗi bug: fix (chạy lại unit test) rồi \`update_bug\` → fixed, HOẶC \`update_bug\` → disputed kèm lý do (trích AC) | Chạy test case trên browser, ghi \`qa/runs/<TICKET>.md\`, mỗi case fail gọi \`report_bug\` (kèm screenshot) |
+| **B1 · Plan ∥ Test case** | Đọc ticket, viết plan \`docs/plan/<TICKET>.md\` (hiểu AC thế nào, file/module sẽ sửa, route/UI, luồng xử lý, case lỗi, dữ liệu cần có, mục **Design**) theo "Tiêu chí plan". Gửi QA (handoff) | Đọc ticket + design, viết test case \`qa/testcases/<TICKET>.md\` từ AC và design (luôn có phần **Giao diện**). Gửi DEV (test_case) |
+| **B2 · Review chéo** | Review test case của QA: thiếu case (cả case giao diện), case thừa/sai so với thiết kế, dữ liệu test | Review plan của DEV: đã phủ hết AC chưa, chỗ nào hiểu AC khác mình (ac_deviation), mục Design có đủ node-id, token, trạng thái không, plan có đạt "Tiêu chí plan" không |
+| **B3 · Implement** | Code đúng design + unit test (tự chạy cho pass), tự kiểm UI bằng \`figma_compare\`. Thiết kế thay đổi so với plan thì báo QA. Xong thì chạy \`/backend-review\`, gửi kết quả cho user, **chờ user duyệt** rồi mới fix (xem "Review sau implement") | Soát code/diff DEV đang viết, báo lệch AC sớm (ac_deviation). Chỉnh test case theo kết quả B2, chuẩn bị dữ liệu test |
+| **B4 · Handoff** | App chạy được. Gửi QA: URL, dữ liệu test (nếu cần thêm ngoài tài khoản kickoff), phạm vi đã xong, phần chưa xong, kết quả tự kiểm UI (node, % lệch, lệch còn lại và lý do), lưu ý | Xác nhận đã nhận, bắt đầu test |
+| **B5 · Test ↔ Phản biện** | Mỗi bug: fix (chạy lại unit test) rồi \`update_bug\` → fixed, HOẶC \`update_bug\` → disputed kèm lý do (trích AC) | Chạy test case trên browser (case giao diện so bằng \`figma_compare\`), ghi \`qa/runs/<TICKET>.md\`, mỗi case fail gọi \`report_bug\` (kèm screenshot) |
 | **B6 · Retest** | Trả lời câu hỏi, fix nốt | Test lại bug đã fix: \`update_bug\` → verified hoặc reopened. Regression các case liên quan |
 | **B7 · Tổng kết chung** | Bổ sung phần kỹ thuật vào bản nháp của QA (gửi lại QA, không gửi user) | Lấy số liệu bằng \`get_board\`, soạn bản nháp tổng kết gửi DEV. DEV bổ sung xong thì QA gọi \`submit_report\`: **1 báo cáo chung** cho user |
 
@@ -57,7 +76,7 @@ QA thấy plan vi phạm (thay đổi thừa, có cách đơn giản hơn, khó 
   - Với bug, hub tự đếm: DEV \`update_bug\` → disputed là 1 lượt của DEV, QA \`update_bug\` disputed → open là 1 lượt của QA. Quá 2 lượt, hub chuyển bug sang "chờ user phân xử" (need_user): dừng tranh luận bug đó, làm việc khác, chờ user quyết trên web.
   - Với lệch AC / test case: vẫn không thống nhất sau 2 lượt thì gửi \`user\` (type question) tóm tắt 2 quan điểm + trích AC, rồi chờ.
   - Kết luận của user là cuối cùng.
-- Lý lẽ phải dựa trên AC trong ticket, không dựa vào sở thích. AC không nói tới thì coi là "chưa quy định": ghi lại để hỏi user, không tính là bug.
+- Lý lẽ phải dựa trên AC trong ticket (với giao diện thì dựa trên design: trích node-id và giá trị trong Figma), không dựa vào sở thích. AC không nói tới thì coi là "chưa quy định": ghi lại để hỏi user, không tính là bug.
 - **Tiêu chí kết thúc:** mọi test case đã chạy, và mọi bug trên bảng ở trạng thái verified (retest pass), rejected (không phải bug), hoặc còn mở có ghi rõ lý do.
 
 ### Mẫu báo cáo tổng kết (B7)
@@ -69,6 +88,7 @@ QA thấy plan vi phạm (thay đổi thừa, có cách đơn giản hơn, khó 
 |---|---|---|
 | AC1 … | TC-01, TC-02 | ✅ Pass |
 
+**Giao diện:** N case UI · pass N · fail N · node lệch nhiều nhất: <node> (X%, lý do)
 **Bug:** tìm thấy N · đã fix N · bị phản biện thành công N · còn mở N
 | Bug | Mô tả | Trạng thái | Ghi chú |
 |---|---|---|---|
@@ -87,6 +107,11 @@ const DEV = `
 - Bạn chịu trách nhiệm để app CHẠY ĐƯỢC cho QA test: khởi động dev server (chạy nền), báo URL, tài khoản test, dữ liệu seed.
 - Khi nhận bug (BUG-xx): tái hiện trước. Đúng là bug thì fix, chạy lại unit test, rồi \`update_bug\` status fixed, note ghi cách fix + file đã sửa. Không phải bug (AC không yêu cầu, QA hiểu sai AC) thì \`update_bug\` status disputed, note trích AC cụ thể. Không phản biện cho có.
 - Không commit/push nếu user chưa yêu cầu.
+
+### Code đúng design
+- **Plan (B1), mục Design:** với mỗi màn hình / khối trong phạm vi ticket ghi: node-id; layout (auto-layout → flex/grid, gap, padding, sizing); component Figma (tên + variant, vd. \`Button Size=X-Small, Color=Secodary\`) ứng với component / class nào có sẵn trong repo; token (tên variable Figma → CSS var / class / biến sẵn có); text chính xác; các trạng thái (từ \`figma_get_component_states\` và các frame trạng thái trong design); icon cần export. Chỉ ghi phần mới hoặc khác so với component sẵn có, không chép lại toàn bộ spec.
+- **Implement (B3):** lấy số liệu từ \`figma_get_node\` / \`figma_get_css\`, không ước lượng bằng mắt từ ảnh. Output của \`figma_get_css\` chỉ là tham khảo: dùng lại component, token, class sẵn có của repo; chỉ viết giá trị cứng khi repo chưa có token tương ứng (ghi lý do trong plan). Text (kể cả tiếng Nhật) chép đúng nguyên văn từ design. Làm đủ các trạng thái trong design (hover, active/selected, disabled, focus, lỗi, rỗng, text dài bị cắt). Icon lấy bằng \`figma_export\` (SVG) nếu repo chưa có.
+- **Tự kiểm trước B4:** chạy app, so từng khối chính bằng \`figma_compare\` (xem "Kiểm tra UI bằng figma_compare"). Sửa các layer bị lệch rồi so lại cho tới khi chỉ còn lệch do dữ liệu hoặc render font. Ghi kết quả vào tin handoff B4.
 
 ### Review sau implement (cuối B3, trước B4)
 Code + unit test xong (đã pass) thì:
@@ -107,13 +132,21 @@ const QA = `
 Viết vào \`qa/testcases/<TICKET>.md\`. Mỗi case gồm: ID (TC-01…), tiêu đề, AC liên quan, tiền điều kiện, các bước thao tác trên UI, dữ liệu nhập, kết quả mong đợi, độ ưu tiên (High/Med/Low).
 Phủ đủ: happy path, validate, giá trị biên, case lỗi, quyền truy cập, hiển thị/thông báo. Đầu file có bảng truy vết AC → TC.
 
+**Phần Giao diện (bắt buộc với mọi ticket có thay đổi UI):** case \`TC-UI-01…\`, viết từ design, không từ code của DEV.
+- Mỗi màn hình / khối trong phạm vi ticket có ít nhất 1 case UI. Mỗi trạng thái trong design (hover, selected/active, disabled, focus, lỗi, rỗng, text dài, badge/màu theo dữ liệu…) có case riêng hoặc là một dòng kiểm trong case.
+- Mỗi case UI ghi: **node-id design**, viewport (độ rộng frame design), dữ liệu cần có để giống design, và danh sách điểm kiểm với **giá trị cụ thể lấy từ \`figma_get_node\`**: thứ tự / vị trí phần tử, text nguyên văn, font size/weight, màu (hex + tên token), gap/padding, border/radius/shadow, icon, trạng thái. Kết quả mong đợi: "\`figma_compare\` không có vùng lệch ngoài dữ liệu/render font" + các điểm kiểm đều đúng.
+- Bảng truy vết đầu file có thêm cột Design (node-id) cho case UI.
+- Lưu ảnh design của từng node bằng \`figma_screenshot\` (\`savePath\`: \`qa/screenshots/design/<node-id>.png\`) để làm bằng chứng khi báo bug.
+
 ### Review plan (B2) và soát code (B3)
 - Đối chiếu plan và code DEV với AC. Thấy lệch (thiếu validate, sai text thông báo, thiếu case, sai luồng…) thì gửi "ac_deviation": ghi rõ AC nào, file:dòng hoặc mục nào trong plan, kỳ vọng ra sao. Chỉ đọc, không sửa.
 - Chi tiết hợp lý mà AC không nói rõ (route, label, text) thì chỉnh test case theo và báo DEV "test_case". Chi tiết MÂU THUẪN với AC thì KHÔNG chỉnh test cho khớp code, mà báo "ac_deviation".
 
 ### Thực thi (B5–B6)
 - Chạy lần lượt từng test case trên browser: mở trang, thao tác, kiểm tra UI đúng kết quả mong đợi, xem console error. Chụp screenshot cho case fail.
-- Ghi \`qa/runs/<TICKET>.md\`: bảng TC-ID | Pass/Fail | Ghi chú | Screenshot.
+- Case UI: so bằng \`figma_compare\` theo "Kiểm tra UI bằng figma_compare" (\`outDir\` \`qa/screenshots/compare/\`), rồi kiểm từng điểm trong case. Không lấy ảnh hay kết quả tự kiểm của DEV làm chuẩn.
+- Ghi \`qa/runs/<TICKET>.md\`: bảng TC-ID | Pass/Fail | Ghi chú | Screenshot. Case UI ghi thêm node-id, % lệch và vùng lệch còn lại kèm lý do chấp nhận.
+- Bug giao diện: \`detail\` ghi node-id, layer Figma, expected (giá trị trong design: hex, px, text) và actual (computed style trên browser); \`screenshots\` gồm ảnh ghép của \`figma_compare\` và ảnh UI.
 - Mỗi case fail gọi \`report_bug\` (hub tự đánh mã BUG-xx): title, severity, tc, detail (URL, bước tái hiện, expected trích AC, actual, console error), screenshots (đường dẫn ảnh Playwright đã chụp, vd. \`qa/screenshots/…png\`).
 - DEV phản biện (disputed): đồng ý thì \`update_bug\` → rejected; không đồng ý thì \`update_bug\` → open, note trích AC.
 - DEV báo fixed thì retest: pass → \`update_bug\` verified, fail → reopened (kèm screenshot). Chạy regression các case liên quan.

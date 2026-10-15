@@ -270,7 +270,7 @@ export function App() {
                   <Users className="ic" />
                 </span>
                 <h1>Bắt đầu ticket mới</h1>
-                <p className="muted">Nhập mã ticket và link Figma: hub chạy ngầm DEV + QA trong repo rồi gửi kickoff cho cả hai.</p>
+                <p className="muted">Nhập mã ticket: hub chạy ngầm DEV + QA trong repo rồi gửi kickoff cho cả hai.</p>
                 <button className="btn primary lg" onClick={() => setDialog("new")}>
                   <SquarePen className="ic" /> Phòng mới
                 </button>

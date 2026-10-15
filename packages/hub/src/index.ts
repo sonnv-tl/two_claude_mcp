@@ -585,7 +585,7 @@ function listRepos(): RepoInfo[] {
       if (!existsSync(l.repoDir)) info.error = "Không truy cập được thư mục repo";
       else {
         const { dir, cfg } = loadRepoConfig(l.repoDir);
-        Object.assign(info, { hasConfig: !!dir, figma: cfg.figma || undefined, testAccount: cfg.testAccount || undefined });
+        Object.assign(info, { hasConfig: !!dir, testAccount: cfg.testAccount || undefined });
       }
     } catch (e) {
       info.error = e instanceof Error ? e.message : String(e);
@@ -595,7 +595,7 @@ function listRepos(): RepoInfo[] {
   return [...out.values()];
 }
 
-/** Lưu kickoff, bật trực, hub chạy ngầm DEV + QA, gửi kickoff tới @all. Giống `tcm start <ticket> --figma <url>` chạy trong repo. */
+/** Lưu kickoff, bật trực, hub chạy ngầm DEV + QA, gửi kickoff tới @all. Giống `tcm start <ticket>` chạy trong repo. */
 function startTicket(b: StartTicketRequest) {
   const ticket = b?.ticket?.trim();
   if (!ticket) throw new OpError("Thiếu mã ticket");
@@ -613,7 +613,6 @@ function startTicket(b: StartTicketRequest) {
   const ref = { repoDir: repo.repoDir, ...(repo.wslCwd ? { wslCwd: repo.wslCwd, distro: repo.distro || "Ubuntu" } : {}) };
   const meta: KickoffMeta = {
     ticket,
-    figma: b.figma?.trim() || cfg.figma,
     testAccount: b.testAccount?.trim() || cfg.testAccount,
     appRun: cfg.app?.run,
     appUrl: cfg.app?.url,
@@ -826,7 +825,6 @@ function roomSummary(room: string, forName: string | null): string {
   out.push(
     "",
     "## Thông tin ticket",
-    ...(meta.figma ? [`- Figma: ${meta.figma}`] : []),
     ...(meta.testAccount ? [`- Tài khoản test: ${meta.testAccount}`] : []),
     ...(meta.appRun || meta.appUrl ? [`- App: ${[meta.appRun && `\`${meta.appRun}\``, meta.appUrl].filter(Boolean).join(" → ")}`] : []),
     `- File: plan ${file(meta.planDir, "docs/plan")} · test case ${file(meta.testcaseDir, "qa/testcases")} · kết quả test ${file(meta.runsDir, "qa/runs")}`,

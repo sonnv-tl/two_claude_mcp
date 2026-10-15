@@ -32,7 +32,7 @@ Cài alias một lần (WSL): `echo "alias tcm='bash /mnt/c/laragon/www/two_clau
 cd ~/thankslab-portal
 tcm init                              # một lần mỗi repo: tạo .team-hub.json + .team-hub.local.json, thêm file của tcm/agent vào .git/info/exclude
 tcm start TLPORTAL-10182              # hub → DEV + QA chạy NGẦM trên hub → web; gửi kickoff ngay (hub giữ tin, DEV/QA nhận khi vào phòng)
-tcm start TLPORTAL-10182 --figma "https://www.figma.com/design/…" --notes "chỉ làm màn list"
+tcm start TLPORTAL-10182 --notes "chỉ làm màn list"
 tcm start TLPORTAL-10182 --manual     # không tự gửi, gửi bằng menu phòng → Kickoff ticket trên web
 tcm start TLPORTAL-10182 --wt         # cách cũ: mở DEV | QA trong cửa sổ Windows Terminal thay vì chạy ngầm
 tcm status                            # các phòng, agent đang chờ / đang làm / nghỉ / chạy ngầm / ⚠ / đã đóng
@@ -42,7 +42,7 @@ tcm close TLPORTAL-10182              # đóng ticket (giữ báo cáo B7), agen
 tcm kill TLPORTAL-10182               # tắt hẳn session DEV/QA đang chạy ngầm
 ```
 
-**Mở ticket ngay trên web:** nút **Phòng mới** (sidebar, `Phòng mới` khi chưa có phòng) làm đúng việc của `tcm start` / task VS Code: nhập mã ticket và link Figma (để trống = link trong `.team-hub.json`, hoặc link trong ticket), chọn repo (danh sách các repo đã từng chạy `tcm start`, hoặc gõ đường dẫn: `/home/...` là repo trong WSL). Hub đọc `.team-hub.json` + `.team-hub.local.json` của repo, lưu kickoff, bật trực, chạy ngầm DEV + QA rồi gửi kickoff cho `@all`. Phòng đã có thì hỏi lại trước khi gửi kickoff mới.
+**Mở ticket ngay trên web:** nút **Phòng mới** (sidebar, `Phòng mới` khi chưa có phòng) làm đúng việc của `tcm start` / task VS Code: nhập mã ticket, chọn repo (danh sách các repo đã từng chạy `tcm start`, hoặc gõ đường dẫn: `/home/...` là repo trong WSL). Hub đọc `.team-hub.json` + `.team-hub.local.json` của repo, lưu kickoff, bật trực, chạy ngầm DEV + QA rồi gửi kickoff cho `@all`. Phòng đã có thì hỏi lại trước khi gửi kickoff mới.
 
 **Terminal chạy ngầm (mặc định):** hub chạy DEV và QA trong pseudo-terminal của nó, không cần mở cửa sổ terminal hay VS Code. Trên web, nút **Terminal** ở góc phải header (hoặc nút terminal cạnh mỗi agent trong panel Thành viên) mở terminal **gắn bên phải khung chat**: vừa xem / gõ terminal vừa chat với team được. Bấm tên agent ở đầu panel để xem thêm (DEV và QA xếp chồng), kéo cạnh trái để đổi độ rộng, nút phóng to để xem toàn màn hình. Gõ thẳng vào terminal như terminal thật, hoặc dùng ô **"Gõ vào terminal của …"** ở dưới (gửi cả dòng rồi Enter, tiện khi gõ tiếng Việt / dán dài; Esc trong ô này cũng chuyển cho Claude để dừng lượt). Đóng / ẩn chỉ là thôi xem, session vẫn chạy. Mỗi terminal có nút **chạy lại** (session mới, đọc `get_summary` rồi làm tiếp) và **tắt**. Hub tắt hoặc khởi động lại (vd. `hub-service.ps1 restart` sau khi build) thì session ngầm cũng tắt: chạy `tcm resume` hoặc bấm **chạy** trên web.
 
@@ -55,7 +55,6 @@ tcm kill TLPORTAL-10182               # tắt hẳn session DEV/QA đang chạy 
 `.team-hub.json` và `.team-hub.local.json` (gộp đè lên file chính, dùng cho tài khoản test):
 ```json
 {
-  "figma": "https://www.figma.com/design/…?node-id=…",
   "app": { "run": "npm run dev", "url": "http://localhost:8888" },
   "paths": { "plan": "docs/plan", "testcases": "qa/testcases", "runs": "qa/runs" },
   "notes": "",
@@ -70,9 +69,9 @@ tcm kill TLPORTAL-10182               # tắt hẳn session DEV/QA đang chạy 
 - `"skipPermissions"`: mặc định bật. Session chạy với `--dangerously-skip-permissions`, agent chạy lệnh và sửa file **không hỏi duyệt**. Đặt `false` để tắt riêng cho từng agent. Chạy tay thì dùng `SKIP_PERMISSIONS=1` (bash) hoặc `-SkipPermissions` (PowerShell).
 - **Không đụng `.gitignore`:** `tcm init`, `tcm start` và `tcm vscode` ghi vào `.git/info/exclude` (chỉ có trên máy bạn, không bị commit) các mục `.team-hub*.json`, `.vscode/tasks.json`, thư mục plan, test case, kết quả test, `qa/screenshots/`, `.playwright-mcp/`.
 
-**Từ VS Code:** chạy `tcm vscode` trong repo một lần (chạy lại sau mỗi lần cập nhật tcm; bản mới tự xoá các task DEV/QA cũ). Lệnh này thêm 2 task vào `.vscode/tasks.json`: `Ctrl+Shift+P` → *Tasks: Run Task* → **tcm: start ticket** (vào lại ticket làm dở: **tcm: resume ticket**) → nhập mã ticket và link Figma (để trống = dùng link trong `.team-hub.json`, hoặc link trong ticket nếu config không có). Task chỉ chạy `tcm start` / `tcm resume`: DEV và QA chạy ngầm trên hub, xem trên web. Repo trong WSL thì mở VS Code bằng Remote-WSL (`code .` từ WSL). Gán phím tắt: *Keyboard Shortcuts* → `workbench.action.tasks.runTask` với args `"tcm: start ticket"`.
+**Từ VS Code:** chạy `tcm vscode` trong repo một lần (chạy lại sau mỗi lần cập nhật tcm; bản mới tự xoá các task DEV/QA cũ). Lệnh này thêm 2 task vào `.vscode/tasks.json`: `Ctrl+Shift+P` → *Tasks: Run Task* → **tcm: start ticket** (vào lại ticket làm dở: **tcm: resume ticket**) → nhập mã ticket. Task chỉ chạy `tcm start` / `tcm resume`: DEV và QA chạy ngầm trên hub, xem trên web. Repo trong WSL thì mở VS Code bằng Remote-WSL (`code .` từ WSL). Gán phím tắt: *Keyboard Shortcuts* → `workbench.action.tasks.runTask` với args `"tcm: start ticket"`.
 
-**Form Kickoff trên web** (menu tên phòng trên header → Kickoff ticket): điền sẵn thông tin `tcm start` đã lưu. Bạn sửa Figma, tài khoản test, ghi chú, xem trước tin rồi gửi cho `@all`.
+**Form Kickoff trên web** (menu tên phòng trên header → Kickoff ticket): điền sẵn thông tin `tcm start` đã lưu. Bạn sửa tài khoản test, ghi chú, xem trước tin rồi gửi cho `@all`.
 
 ## Chi tiết / chạy tay
 
@@ -89,9 +88,12 @@ tcm kill TLPORTAL-10182               # tắt hẳn session DEV/QA đang chạy 
    - *PostToolUse hook*: tin user / hub gửi trong lúc agent đang làm được chèn vào context sau tool vừa chạy (mỗi tin một lần).
    - *Notification hook*: agent kẹt ở bước xin quyền trong terminal thì avatar agent trên web nháy cảnh báo, phát âm thanh, và gửi thông báo desktop khi tab web không mở.
    - *SessionStart (compact/resume)*: nhắc agent đọc lại lịch sử phòng sau khi context bị nén.
-   - Allowlist: tool hub, browser, các tool **đọc** của figma-console, lệnh git chỉ đọc. **Chặn** Figma MCP chính thức (`mcp__claude_ai_Figma`) để tránh tốn hạn mức. Muốn dùng lại thì xoá mục `deny`.
+   - Allowlist: tool hub, browser, các tool **đọc** của figma-unlimited, lệnh git chỉ đọc. **Chặn** Figma MCP chính thức (`mcp__claude_ai_Figma`) để tránh tốn hạn mức. `figma_execute` của figma-unlimited được phép nhưng agent chỉ chạy code đọc. Muốn dùng lại thì xoá mục `deny`.
 
-   **Figma**: agent xem design bằng **figma-console (Desktop Bridge)**. Thêm dòng `Figma: <link>` vào tin kickoff để dùng link đó thay cho link trong ticket (xem `examples/kickoff.md`). Trước khi kickoff: mở file trong Figma Desktop và chạy plugin Desktop Bridge. Cả DEV và QA đều tự xem design trên link. Kickoff cũng gửi tài khoản test (dòng `Tài khoản test:`), agent không ghi mật khẩu vào file.
+   **Figma**: agent xem design bằng **figma-unlimited** (MCP ở scope user, chạy Figma headless, không tốn hạn mức API, không cần mở Figma Desktop). Link Figma lấy từ ticket trên Backlog (không nhập riêng ở tcm, VS Code hay web). Cả DEV và QA đều tự xem design trên link, và design được coi là chuẩn của giao diện:
+   - DEV: plan có mục Design (node-id, component/token sẵn có, trạng thái), code theo `figma_get_node` / `figma_get_css`, tự so UI bằng `figma_compare` trước khi handoff.
+   - QA: test case luôn có phần Giao diện (`TC-UI-xx`, node-id + giá trị cụ thể từ design), khi test thì chụp phần tử bằng Playwright rồi so bằng `figma_compare`, bug giao diện kèm ảnh ghép design | UI | diff.
+   - Ảnh so sánh: DEV ở `.figma/`, QA ở `qa/screenshots/` (cả hai nằm trong `.git/info/exclude`). Sau khi gửi báo cáo B7, QA dọn bản copy của file chỉ có quyền xem bằng `figma_delete_copy` (theo từng node) rồi đóng trình duyệt headless bằng `figma_close`. Kickoff cũng gửi tài khoản test (dòng `Tài khoản test:`), agent không ghi mật khẩu vào file.
 
 3. **Mở 2 terminal trong repo đích**:
    ```powershell

@@ -348,8 +348,6 @@ export function reportDraft(ticket: string, board: Board): string {
 /** Thông tin để soạn tin kickoff. Lưu theo phòng, lấy từ .team-hub.json (tcm start) hoặc form trên web. */
 export interface KickoffMeta {
   ticket: string;
-  /** Link Figma dùng THAY cho link trong ticket */
-  figma?: string;
   /** vd. "100000 / Password_1" */
   testAccount?: string;
   appRun?: string;
@@ -381,19 +379,16 @@ export interface RepoInfo extends RepoRef {
   lastRoom: string;
   /** Có .team-hub.json / .team-hub.local.json */
   hasConfig: boolean;
-  /** Link Figma mặc định trong .team-hub.json */
-  figma?: string;
   testAccount?: string;
   /** Lỗi đọc config hoặc repo không còn */
   error?: string;
 }
 
-/** Web mở ticket mới (POST /api/start): giống `tcm start <ticket> --figma <url>` chạy trong repo */
+/** Web mở ticket mới (POST /api/start): giống `tcm start <ticket>` chạy trong repo */
 export interface StartTicketRequest {
   ticket: string;
   /** Mặc định = mã ticket */
   room?: string;
-  figma?: string;
   testAccount?: string;
   notes?: string;
   repo: RepoRef;
@@ -407,19 +402,17 @@ export function buildKickoff(meta: KickoffMeta): string {
   const tc = `${(meta.testcaseDir || KICKOFF_DEFAULTS.testcaseDir).replace(/\/$/, "")}/${t}.md`;
   const runs = `${(meta.runsDir || KICKOFF_DEFAULTS.runsDir).replace(/\/$/, "")}/${t}.md`;
   const info: string[] = [];
-  if (meta.figma?.trim())
-    info.push(`- Figma: ${meta.figma.trim()} (dùng link này thay cho link trong ticket, xem bằng figma-console)`);
   if (meta.testAccount?.trim()) info.push(`- Tài khoản test: ${meta.testAccount.trim()} (không ghi mật khẩu vào file)`);
   if (meta.appRun?.trim() || meta.appUrl?.trim())
     info.push(`- App: ${[meta.appRun?.trim() && `\`${meta.appRun.trim()}\``, meta.appUrl?.trim()].filter(Boolean).join(" → ")}`);
   return [
     `🎫 **Kickoff ticket ${t}**`,
     "",
-    `Đọc ticket **${t}** trên Backlog (mô tả, AC, comment, file đính kèm) và chạy quy trình B1 → B7.`,
+    `Đọc ticket **${t}** trên Backlog (mô tả, AC, comment, file đính kèm, link Figma) và chạy quy trình B1 → B7.`,
     ...info,
     "",
-    `- **@dev**: B1 tự xem design + viết plan \`${plan}\` → B2 review test case của QA → B3 implement + unit test → chạy \`/backend-review\`, gửi kết quả cho tôi và chờ tôi duyệt rồi mới fix → B4 chạy app, handoff URL cho QA → B5–B6 fix hoặc phản biện bug.`,
-    `- **@qa**: B1 tự xem design + viết test case \`${tc}\` → B2 review plan của DEV → B3 soát code, báo lệch AC sớm → B5–B6 test trên browser (so UI với design trên Figma), ghi kết quả \`${runs}\`, báo bug, retest.`,
+    `- **@dev**: B1 tự xem design + viết plan \`${plan}\` → B2 review test case của QA → B3 implement đúng design + unit test, tự so UI bằng \`figma_compare\` → chạy \`/backend-review\`, gửi kết quả cho tôi và chờ tôi duyệt rồi mới fix → B4 chạy app, handoff URL cho QA → B5–B6 fix hoặc phản biện bug.`,
+    `- **@qa**: B1 tự xem design + viết test case \`${tc}\` (luôn có phần Giao diện) → B2 review plan của DEV → B3 soát code, báo lệch AC sớm → B5–B6 test trên browser (case giao diện so bằng \`figma_compare\`), ghi kết quả \`${runs}\`, báo bug, retest.`,
     "- **B7**: QA soạn nháp tổng kết, DEV bổ sung phần kỹ thuật, rồi QA gửi tôi **1 báo cáo chung** bằng `submit_report`.",
     "",
     "Luật: mỗi vấn đề tranh luận tối đa 2 lượt mỗi bên, sau đó hỏi tôi phân xử. Mọi lý lẽ phải trích AC. Không sửa ticket trên Backlog.",

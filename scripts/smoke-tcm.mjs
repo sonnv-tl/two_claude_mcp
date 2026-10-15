@@ -64,10 +64,9 @@ try {
   check("tcm init tạo .team-hub.json + .team-hub.local.json", i.code === 0 && existsSync(join(repo, ".team-hub.json")) && existsSync(join(repo, ".team-hub.local.json")), i.out);
   const excl = readFileSync(join(repo, ".git", "info", "exclude"), "utf8");
   check("init thêm file cá nhân vào .git/info/exclude",
-    [".team-hub.json", ".team-hub.local.json", "docs/plan/", "qa/testcases/", "qa/runs/", ".vscode/tasks.json"].every((e) => excl.includes(e)), excl);
+    [".team-hub.json", ".team-hub.local.json", "docs/plan/", "qa/testcases/", "qa/runs/", ".figma/", ".vscode/tasks.json"].every((e) => excl.includes(e)), excl);
   check("init KHÔNG sửa .gitignore", readFileSync(join(repo, ".gitignore"), "utf8") === "node_modules\n");
   const cfg = JSON.parse(readFileSync(join(repo, ".team-hub.json"), "utf8"));
-  cfg.figma = "https://www.figma.com/design/ABC/x?node-id=1-2";
   cfg.agents.dev.model = "sonnet";
   writeFileSync(join(repo, ".team-hub.json"), JSON.stringify(cfg));
 
@@ -84,8 +83,8 @@ try {
     await sleep(250);
     meta = await (await fetch(`${HUB}/api/rooms/TL-1/meta`)).json();
   }
-  check("start lưu meta (figma từ config, tài khoản từ .local, notes từ CLI)",
-    meta.figma === cfg.figma && meta.testAccount === "100000 / Password_1" && meta.notes === "chỉ màn login" && meta.appUrl === "http://localhost:8888",
+  check("start lưu meta (tài khoản từ .local, notes từ CLI, không có figma)",
+    meta.figma === undefined && meta.testAccount === "100000 / Password_1" && meta.notes === "chỉ màn login" && meta.appUrl === "http://localhost:8888",
     JSON.stringify(meta));
   const dev = await fakeAgent("dev");
   const qa = await fakeAgent("qa");
@@ -102,8 +101,8 @@ try {
   await sleep(300);
   const k = dev.got.find((m) => m.content.includes("Kickoff ticket TL-1"));
   check("agent nhận kickoff @all từ user", k && k.from === "user" && k.to === "@all" && qa.got.some((m) => m.id === k.id), JSON.stringify(dev.got));
-  check("kickoff có Figma, tài khoản test, ghi chú, đường dẫn file",
-    k && k.content.includes(cfg.figma) && k.content.includes("100000 / Password_1") && k.content.includes("chỉ màn login") && k.content.includes("qa/testcases/TL-1.md"),
+  check("kickoff có tài khoản test, ghi chú, đường dẫn file; link Figma lấy từ ticket",
+    k && !k.content.includes("- Figma:") && k.content.includes("link Figma") && k.content.includes("100000 / Password_1") && k.content.includes("chỉ màn login") && k.content.includes("qa/testcases/TL-1.md"),
     k?.content);
 
   const st = await tcm("status");
@@ -159,12 +158,12 @@ try {
   // Web: Phòng mới (/api/repos + /api/start) giống tcm start trong repo
   const repos = await (await fetch(`${HUB}/api/repos`)).json();
   const mine = repos.find((r) => r.repoDir.toLowerCase() === resolve(repo).toLowerCase());
-  check("API repos: liệt kê repo đã dùng, đọc figma từ .team-hub.json", !!mine && mine.hasConfig && mine.figma === cfg.figma, JSON.stringify(repos));
+  check("API repos: liệt kê repo đã dùng, đọc .team-hub.json", !!mine && mine.hasConfig && mine.testAccount === "100000 / Password_1", JSON.stringify(repos));
   const post = (path, body) =>
     fetch(`${HUB}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then(async (r) => ({ status: r.status, data: await r.json() }));
-  const started = await post("/api/start", { ticket: "TL-WEB", figma: "https://www.figma.com/design/WEB/y?node-id=3-4", repo: { repoDir: repo } });
+  const started = await post("/api/start", { ticket: "TL-WEB", repo: { repoDir: repo } });
   const webMeta = await (await fetch(`${HUB}/api/rooms/TL-WEB/meta`)).json();
-  check("API start: lưu meta (figma từ form, tài khoản từ .local)", started.status === 200 && webMeta.figma.includes("/WEB/") && webMeta.testAccount === "100000 / Password_1", JSON.stringify({ started, webMeta }));
+  check("API start: lưu meta (tài khoản từ .local)", started.status === 200 && webMeta.ticket === "TL-WEB" && webMeta.testAccount === "100000 / Password_1", JSON.stringify({ started, webMeta }));
   check("API start: chạy ngầm DEV + QA", started.data.terms?.filter((t) => t.running).length === 2, JSON.stringify(started.data.terms));
   const webMsgs = await (await fetch(`${HUB}/api/rooms/TL-WEB/messages`)).json();
   check("API start: gửi kickoff tới @all", webMsgs.some((m) => m.from === "user" && m.to === "@all" && m.content.includes("Kickoff ticket TL-WEB")), JSON.stringify(webMsgs));

@@ -4,7 +4,6 @@
 //   tcm start <TICKET> [options]  bảo đảm hub chạy → lưu thông tin kickoff → hub chạy ngầm DEV + QA
 //                                 → mở web (nút Terminal để xem) → gửi kickoff (agent nhận khi vào phòng)
 //       --room <tên>     tên phòng (mặc định = mã ticket)
-//       --figma <url>    link Figma thay cho link trong ticket (ghi đè .team-hub.json)
 //       --account "<user> / <pass>"   tài khoản test (ghi đè)
 //       --notes "<text>" ghi chú thêm vào kickoff
 //       --manual         không tự gửi kickoff (soạn/gửi bằng menu phòng → Kickoff ticket trên web)
@@ -265,6 +264,7 @@ function personalEntries(cfg) {
     `${(p.testcases || "qa/testcases").replace(/\/$/, "")}/`,
     `${(p.runs || "qa/runs").replace(/\/$/, "")}/`,
     "qa/screenshots/",
+    ".figma/",
     ".playwright-mcp/",
   ];
 }
@@ -291,7 +291,6 @@ async function cmdInit() {
   const local = join(cwd, ".team-hub.local.json");
   if (existsSync(main)) die(`${main} đã tồn tại`);
   const cfg = {
-    figma: "",
     app: { run: "npm run dev", url: "http://localhost:8888" },
     paths: { plan: "docs/plan", testcases: "qa/testcases", runs: "qa/runs" },
     notes: "",
@@ -310,7 +309,7 @@ async function cmdInit() {
 
 async function cmdStart() {
   const ticket = arg1;
-  if (!ticket) die("cách dùng: tcm start <TICKET> [--room X] [--figma URL] [--account \"u / p\"] [--manual]");
+  if (!ticket) die("cách dùng: tcm start <TICKET> [--room X] [--account \"u / p\"] [--manual]");
   const room = typeof opts.room === "string" ? opts.room : ticket;
   if (!NAME_RE.test(room)) die(`tên phòng không hợp lệ: ${room} (chỉ chữ, số, _ . -)`);
 
@@ -320,7 +319,6 @@ async function cmdStart() {
 
   const meta = {
     ticket,
-    figma: (typeof opts.figma === "string" && opts.figma.trim() ? opts.figma.trim() : cfg.figma),
     testAccount: typeof opts.account === "string" ? opts.account : cfg.testAccount,
     appRun: cfg.app?.run,
     appUrl: cfg.app?.url,
@@ -384,18 +382,16 @@ function stripJsonc(text) {
 
 /** Ghi task vào .vscode/tasks.json: "tcm: start ticket" / "tcm: resume ticket" (DEV, QA chạy ngầm trên hub, xem trên web) */
 async function cmdVscode() {
-  const { cfg } = loadConfig();
   const T = "${input:tcmTicket}";
-  const F = "${input:tcmFigma}";
   let kick, shell;
   if (wslCwd) {
     // VS Code mở repo qua Remote-WSL → task chạy bằng bash trong WSL
     const tcm = `bash ${toWslPath(ROOT)}/scripts/tcm`;
-    kick = (resume) => (resume ? `${tcm} resume ${T}` : `${tcm} start ${T} --figma "${F}"`);
+    kick = (resume) => (resume ? `${tcm} resume ${T}` : `${tcm} start ${T}`);
     shell = { executable: "bash", args: ["-c"] };
   } else {
     const tcmJs = join(ROOT, "scripts", "tcm.mjs");
-    kick = (resume) => (resume ? `& node '${tcmJs}' resume ${T}` : `& node '${tcmJs}' start ${T} --figma '${F}'`);
+    kick = (resume) => (resume ? `& node '${tcmJs}' resume ${T}` : `& node '${tcmJs}' start ${T}`);
     shell = { executable: "powershell.exe", args: ["-NoProfile", "-Command"] };
   }
   const task = (label, command) => ({
@@ -408,15 +404,7 @@ async function cmdVscode() {
   });
   // Hỏi mã ticket, lưu thông tin kickoff, hub chạy ngầm DEV + QA, mở web, gửi kickoff
   const tasks = [task("tcm: start ticket", kick(false)), task("tcm: resume ticket", kick(true))];
-  const inputs = [
-    { id: "tcmTicket", type: "promptString", description: "Mã ticket (cũng là tên phòng), vd. TLPORTAL-10182" },
-    {
-      id: "tcmFigma",
-      type: "promptString",
-      description: "Link Figma cho ticket này (để trống = dùng link trong .team-hub.json, không có thì dùng link trong ticket)",
-      default: cfg.figma ?? "",
-    },
-  ];
+  const inputs = [{ id: "tcmTicket", type: "promptString", description: "Mã ticket (cũng là tên phòng), vd. TLPORTAL-10182" }];
 
   const file = join(cwd, ".vscode", "tasks.json");
   let doc = { version: "2.0.0", tasks: [], inputs: [] };
@@ -430,8 +418,8 @@ async function cmdVscode() {
   doc.version ??= "2.0.0";
   // Bỏ mọi task "tcm: …" cũ (bản trước mở terminal DEV | QA trong VS Code)
   doc.tasks = [...(doc.tasks ?? []).filter((t) => !String(t.label ?? "").startsWith("tcm:")), ...tasks];
-  const ids = new Set(inputs.map((i) => i.id));
-  doc.inputs = [...(doc.inputs ?? []).filter((i) => !ids.has(i.id)), ...inputs];
+  // Bỏ mọi input "tcm…" cũ (vd. tcmFigma của bản trước)
+  doc.inputs = [...(doc.inputs ?? []).filter((i) => !String(i.id ?? "").startsWith("tcm")), ...inputs];
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(doc, null, 2) + "\n");
   console.log(`✔ ghi ${file}`);

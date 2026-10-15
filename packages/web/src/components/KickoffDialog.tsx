@@ -9,7 +9,6 @@ import { errText } from "../lib/format";
 const FIELDS: { key: keyof KickoffMeta; label: string; placeholder: string; wide?: boolean }[] = [
   { key: "ticket", label: "Mã ticket", placeholder: "TLPORTAL-10182" },
   { key: "testAccount", label: "Tài khoản test", placeholder: "100000 / Password_1" },
-  { key: "figma", label: "Link Figma (thay cho link trong ticket)", placeholder: "https://www.figma.com/design/…?node-id=…", wide: true },
   { key: "appRun", label: "Lệnh chạy app", placeholder: "npm run dev" },
   { key: "appUrl", label: "URL app", placeholder: "http://localhost:8888" },
   { key: "notes", label: "Ghi chú (phạm vi, lưu ý…)", placeholder: "", wide: true },
