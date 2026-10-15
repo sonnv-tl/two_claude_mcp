@@ -33,7 +33,7 @@ cd ~/thankslab-portal
 tcm init                              # một lần mỗi repo: tạo .team-hub.json + .team-hub.local.json, thêm file của tcm/agent vào .git/info/exclude
 tcm start TLPORTAL-10182              # hub → DEV + QA chạy NGẦM trên hub → web; gửi kickoff ngay (hub giữ tin, DEV/QA nhận khi vào phòng)
 tcm start TLPORTAL-10182 --figma "https://www.figma.com/design/…" --notes "chỉ làm màn list"
-tcm start TLPORTAL-10182 --manual     # không tự gửi, bấm 🎫 Kickoff trên web
+tcm start TLPORTAL-10182 --manual     # không tự gửi, gửi bằng menu phòng → Kickoff ticket trên web
 tcm start TLPORTAL-10182 --wt         # cách cũ: mở DEV | QA trong cửa sổ Windows Terminal thay vì chạy ngầm
 tcm status                            # các phòng, agent đang chờ / đang làm / nghỉ / chạy ngầm / ⚠ / đã đóng
 tcm stop TLPORTAL-10182               # tắt chế độ trực
@@ -42,7 +42,9 @@ tcm close TLPORTAL-10182              # đóng ticket (giữ báo cáo B7), agen
 tcm kill TLPORTAL-10182               # tắt hẳn session DEV/QA đang chạy ngầm
 ```
 
-**Terminal chạy ngầm (mặc định):** hub chạy DEV và QA trong pseudo-terminal của nó, không cần mở cửa sổ terminal hay VS Code. Trên web, cột Thành viên có nút **🖥** cạnh mỗi agent: bấm để mở terminal của agent ngay trong trang (DEV | QA cạnh nhau, xem và gõ được như terminal thật), bấm lại hoặc **✕ ẩn** để đóng. Đóng chỉ là thôi xem, session vẫn chạy. Trong terminal có **↻ chạy lại** (session mới, đọc `get_summary` rồi làm tiếp) và **■ tắt**. Hub tắt hoặc khởi động lại (vd. `hub-service.ps1 restart` sau khi build) thì session ngầm cũng tắt: chạy `tcm resume` hoặc bấm **▶ chạy** trên web.
+**Mở ticket ngay trên web:** nút **Phòng mới** (sidebar, `Phòng mới` khi chưa có phòng) làm đúng việc của `tcm start` / task VS Code: nhập mã ticket và link Figma (để trống = link trong `.team-hub.json`, hoặc link trong ticket), chọn repo (danh sách các repo đã từng chạy `tcm start`, hoặc gõ đường dẫn: `/home/...` là repo trong WSL). Hub đọc `.team-hub.json` + `.team-hub.local.json` của repo, lưu kickoff, bật trực, chạy ngầm DEV + QA rồi gửi kickoff cho `@all`. Phòng đã có thì hỏi lại trước khi gửi kickoff mới.
+
+**Terminal chạy ngầm (mặc định):** hub chạy DEV và QA trong pseudo-terminal của nó, không cần mở cửa sổ terminal hay VS Code. Trên web, nút **Terminal** ở góc phải header (hoặc nút terminal cạnh mỗi agent trong panel Thành viên) mở terminal **gắn bên phải khung chat**: vừa xem / gõ terminal vừa chat với team được. Bấm tên agent ở đầu panel để xem thêm (DEV và QA xếp chồng), kéo cạnh trái để đổi độ rộng, nút phóng to để xem toàn màn hình. Gõ thẳng vào terminal như terminal thật, hoặc dùng ô **"Gõ vào terminal của …"** ở dưới (gửi cả dòng rồi Enter, tiện khi gõ tiếng Việt / dán dài; Esc trong ô này cũng chuyển cho Claude để dừng lượt). Đóng / ẩn chỉ là thôi xem, session vẫn chạy. Mỗi terminal có nút **chạy lại** (session mới, đọc `get_summary` rồi làm tiếp) và **tắt**. Hub tắt hoặc khởi động lại (vd. `hub-service.ps1 restart` sau khi build) thì session ngầm cũng tắt: chạy `tcm resume` hoặc bấm **chạy** trên web.
 
 **Vào lại ticket (`tcm resume`)**: chạy ở đâu cũng được (dùng repo mà `tcm start` đã lưu). Lệnh in tóm tắt phòng (ai đang ở bước nào, bug, câu hỏi chờ bạn, báo cáo B7, tin gần đây), mở lại phòng nếu đã đóng, bật trực, rồi chạy DEV + QA với session **mới** (thay session ngầm cũ nếu còn): mỗi agent gọi `get_summary`, đọc lại plan / test case, báo bạn đang ở đâu rồi làm tiếp. Tin gửi cho agent lúc nó offline vẫn được giao khi vào lại.
 
@@ -70,7 +72,7 @@ tcm kill TLPORTAL-10182               # tắt hẳn session DEV/QA đang chạy 
 
 **Từ VS Code:** chạy `tcm vscode` trong repo một lần (chạy lại sau mỗi lần cập nhật tcm; bản mới tự xoá các task DEV/QA cũ). Lệnh này thêm 2 task vào `.vscode/tasks.json`: `Ctrl+Shift+P` → *Tasks: Run Task* → **tcm: start ticket** (vào lại ticket làm dở: **tcm: resume ticket**) → nhập mã ticket và link Figma (để trống = dùng link trong `.team-hub.json`, hoặc link trong ticket nếu config không có). Task chỉ chạy `tcm start` / `tcm resume`: DEV và QA chạy ngầm trên hub, xem trên web. Repo trong WSL thì mở VS Code bằng Remote-WSL (`code .` từ WSL). Gán phím tắt: *Keyboard Shortcuts* → `workbench.action.tasks.runTask` với args `"tcm: start ticket"`.
 
-**Form 🎫 Kickoff trên web:** điền sẵn thông tin `tcm start` đã lưu. Bạn sửa Figma, tài khoản test, ghi chú, xem trước tin rồi gửi cho `@all`.
+**Form Kickoff trên web** (menu tên phòng trên header → Kickoff ticket): điền sẵn thông tin `tcm start` đã lưu. Bạn sửa Figma, tài khoản test, ghi chú, xem trước tin rồi gửi cho `@all`.
 
 ## Chi tiết / chạy tay
 
@@ -83,9 +85,9 @@ tcm kill TLPORTAL-10182               # tắt hẳn session DEV/QA đang chạy 
 2. **Cấu hình MCP `team-hub`**: dùng `examples/.mcp.json`, đặt ở repo đích hoặc ở scope user. Tên, vai trò và phòng lấy từ biến môi trường do script đặt. Session **không** mở qua script (không có `HUB_ROOM`) thì bridge ở **chế độ nghỉ**: không vào phòng, không có tool. Cài ở scope user cũng không ảnh hưởng các session thường.
 
    **Hooks** (`hooks/team-settings.json`, script tự nạp qua `--settings`, tắt bằng `NO_HOOKS=1` / `-NoHooks`):
-   - *Stop hook*: giữ agent ở chế độ trực. Agent định kết thúc lượt thì bị nhắc gọi `wait_for_messages`. Nếu agent kết thúc lượt 2 lần liền mà không chịu chờ, hook thả nó ra và web báo "đã rời chế độ trực". Nút **● Đang trực / ○ Nghỉ trực** trên web cho agent kết thúc lượt khi xong việc. Còn tin gửi agent chưa được xử lý thì hook chặn kết thúc lượt (mỗi tin một lần), kể cả khi nghỉ trực. Agent kết thúc lượt thì hub đánh dấu **nghỉ** để đánh thức khi bạn nhắn.
+   - *Stop hook*: giữ agent ở chế độ trực. Agent định kết thúc lượt thì bị nhắc gọi `wait_for_messages`. Nếu agent kết thúc lượt 2 lần liền mà không chịu chờ, hook thả nó ra và web báo "đã rời chế độ trực". Nút **Đang trực / Nghỉ trực** cạnh tên phòng trên web cho agent kết thúc lượt khi xong việc. Còn tin gửi agent chưa được xử lý thì hook chặn kết thúc lượt (mỗi tin một lần), kể cả khi nghỉ trực. Agent kết thúc lượt thì hub đánh dấu **nghỉ** để đánh thức khi bạn nhắn.
    - *PostToolUse hook*: tin user / hub gửi trong lúc agent đang làm được chèn vào context sau tool vừa chạy (mỗi tin một lần).
-   - *Notification hook*: agent kẹt ở bước xin quyền trong terminal thì web hiện ⚠️, phát âm thanh, và gửi thông báo desktop khi tab web không mở.
+   - *Notification hook*: agent kẹt ở bước xin quyền trong terminal thì avatar agent trên web nháy cảnh báo, phát âm thanh, và gửi thông báo desktop khi tab web không mở.
    - *SessionStart (compact/resume)*: nhắc agent đọc lại lịch sử phòng sau khi context bị nén.
    - Allowlist: tool hub, browser, các tool **đọc** của figma-console, lệnh git chỉ đọc. **Chặn** Figma MCP chính thức (`mcp__claude_ai_Figma`) để tránh tốn hạn mức. Muốn dùng lại thì xoá mục `deny`.
 
@@ -114,7 +116,7 @@ tcm kill TLPORTAL-10182               # tắt hẳn session DEV/QA đang chạy 
    ```
    Hub vẫn chạy phía Windows (`npm run hub` trong PowerShell).
 
-4. **Giao việc từ web**: ở ô chat chọn `@all` (hoặc gõ `@qa ...` / `@dev ...` ở đầu tin để gửi riêng), dán yêu cầu kèm Acceptance Criteria rồi Enter. DEV nhận phần implement + unit test, QA nhận phần test case + test trên browser, hai bên tự phối hợp. Di chuột vào một tin và bấm "trả lời" để trả lời tin đó.
+4. **Giao việc từ web**: ô chat mặc định gửi cả phòng (bấm chip **Cả phòng** để chọn người nhận, hoặc gõ `@qa ...` / `@dev ...` ở đầu tin để gửi riêng), dán yêu cầu kèm Acceptance Criteria rồi Enter. Nút **+** để đính kèm ảnh và chọn loại tin (chat, câu hỏi, bàn giao); ảnh cũng dán (Ctrl+V) hoặc kéo thả thẳng vào khung chat được. Agent nhận link ảnh đã được bridge tải về máy, mở bằng tool Read. DEV nhận phần implement + unit test, QA nhận phần test case + test trên browser, hai bên tự phối hợp. Di chuột vào một tin để copy, trả lời tin đó.
 
 ## Tools mà mỗi session có
 
@@ -138,20 +140,20 @@ Persona mặc định nằm trong `packages/bridge/src/personas.ts`. **DEV**: so
 
 ## Bảng ticket (web)
 
-- **Thanh B1–B7** dưới tiêu đề phòng: mỗi agent đang ở bước nào và đã ở mỗi bước bao lâu. Lấy từ `set_status` (tham số `step`, hoặc text bắt đầu bằng `B5 …`) và tin nhắn bắt đầu bằng `[B4] …`.
-- **Tab Bug** (cột phải): mỗi bug có mã, mức độ, TC, trạng thái và lịch sử chuyển trạng thái. Bấm mã bug để nhảy tới tin báo bug.
+- **Tiến độ B1–B7** (viên cạnh tên phòng, bấm để xem chi tiết): mỗi agent đang ở bước nào và đã ở mỗi bước bao lâu. Lấy từ `set_status` (tham số `step`, hoặc text bắt đầu bằng `B5 …`) và tin nhắn bắt đầu bằng `[B4] …`.
+- **Bảng Bug** (nút bug ở góc phải header, mở panel bên phải): mỗi bug có mã, mức độ, TC, trạng thái và lịch sử chuyển trạng thái. Bấm mã bug để nhảy tới tin báo bug.
   - Luồng: `open → fixed → verified` (hoặc `reopened`); DEV phản biện `→ disputed`; QA giữ quan điểm `disputed → open` hoặc chấp nhận `→ rejected`.
-  - **Giới hạn tranh luận do hub đếm**: mỗi bên tối đa 2 lượt cho một bug. Lượt thứ 3, hub tự chuyển bug sang **Chờ user phân xử**, nhắn cả hai dừng tranh luận, web kêu và tự mở tab Bug. Bạn chọn "Là bug → DEV fix" hoặc "Không phải bug", kèm kết luận. Agent không đổi được bug đang chờ bạn.
-  - Bạn có thể đổi trạng thái bất kỳ bug nào (mở ▾ trên thẻ bug).
+  - **Giới hạn tranh luận do hub đếm**: mỗi bên tối đa 2 lượt cho một bug. Lượt thứ 3, hub tự chuyển bug sang **Chờ user phân xử**, nhắn cả hai dừng tranh luận, web kêu và tự mở bảng Bug. Bạn chọn "Là bug, DEV fix" hoặc "Không phải bug", kèm kết luận. Agent không đổi được bug đang chờ bạn.
+  - Bạn có thể đổi trạng thái bất kỳ bug nào (mở rộng thẻ bug).
 - **Ảnh bằng chứng**: agent truyền đường dẫn ảnh (vd. `qa/screenshots/bug-01.png`) vào `screenshots`, bridge tải ảnh lên hub (`data/attachments/`), web hiện ảnh thu nhỏ trong tin, bấm để xem lớn.
 - **Chống lặp**: 20 tin agent↔agent liên tiếp mà không đổi bước, không đổi trạng thái bug, bạn cũng không nhắn, thì web cảnh báo. 40 tin thì hub yêu cầu mỗi bên gửi bạn 1 tin tóm tắt rồi chờ. Bạn nhắn bất kỳ tin nào là bộ đếm reset. Đổi ngưỡng bằng `HUB_IDLE_WARN`.
 
 ## Báo cáo B7 và đóng ticket (web)
 
-- QA gửi báo cáo chung bằng `submit_report` → tin **báo cáo** gửi bạn, web báo "📄 Báo cáo B7 chờ bạn duyệt", nút trên tiêu đề phòng đổi thành **📄 Báo cáo B7**.
-- Bấm nút đó: xem / **sửa** báo cáo (mỗi lần lưu là một phiên bản), **tải .md**, **Copy markdown**, **✅ Duyệt & đóng ticket**. Team Hub **không ghi gì lên Backlog**: muốn đưa báo cáo lên ticket thì bạn tự dán. Chưa có báo cáo thì có thể "nhắc DEV/QA gửi báo cáo" hoặc "tạo nháp từ bảng bug" để tự viết.
-- **🗑 Xoá phòng** (trên tiêu đề phòng): xoá hẳn phòng (tin nhắn, bug, tiến độ, báo cáo B7, ảnh, thông tin kickoff), tắt session chạy ngầm, ngắt agent đang kết nối. Không hoàn tác được, dùng khi muốn làm lại ticket từ đầu.
-- **Duyệt & đóng ticket**: lưu báo cáo, tắt trực, hub nhắn agent "🏁 dừng việc, kết thúc lượt": agent không trực nữa (không tốn lượt gọi `wait_for_messages`), session ngầm vẫn mở ở prompt. Nhắn cho agent bất cứ lúc nào thì nó được đánh thức để trả lời, rồi nghỉ tiếp. Phòng hiện ✓ ở cột trái. Mở lại bằng nút **Mở lại ticket**, `tcm resume` hoặc gửi kickoff mới.
+- QA gửi báo cáo chung bằng `submit_report` → tin **báo cáo** gửi bạn, web báo "Báo cáo B7 chờ bạn duyệt" và hiện viên **B7 chờ duyệt** cạnh tên phòng.
+- Bấm viên đó (hoặc menu tên phòng → Báo cáo B7): xem / **sửa** báo cáo (mỗi lần lưu là một phiên bản), **tải .md**, **Copy markdown**, **Duyệt & đóng ticket**. Team Hub **không ghi gì lên Backlog**: muốn đưa báo cáo lên ticket thì bạn tự dán. Chưa có báo cáo thì có thể "nhắc DEV/QA gửi báo cáo" hoặc "tạo nháp từ bảng bug" để tự viết.
+- **Xoá phòng** (menu tên phòng, hoặc nút ⋯ cạnh phòng ở sidebar): xoá hẳn phòng (tin nhắn, bug, tiến độ, báo cáo B7, ảnh, thông tin kickoff), tắt session chạy ngầm, ngắt agent đang kết nối. Không hoàn tác được, dùng khi muốn làm lại ticket từ đầu.
+- **Duyệt & đóng ticket**: lưu báo cáo, tắt trực, hub nhắn agent "dừng việc, kết thúc lượt": agent không trực nữa (không tốn lượt gọi `wait_for_messages`), session ngầm vẫn mở ở prompt. Nhắn cho agent bất cứ lúc nào thì nó được đánh thức để trả lời, rồi nghỉ tiếp. Phòng chuyển xuống nhóm **Đã đóng** ở sidebar. Mở lại bằng nút **Mở lại ticket**, `tcm resume` hoặc gửi kickoff mới.
 
 ## Biến môi trường
 
@@ -183,4 +185,5 @@ npm run dev:web   # terminal 2 → http://localhost:5173 (proxy /api, /ws về h
 - [x] **Phase 4**: thanh tiến độ B1–B7, bảng bug + phân xử trên web, giới hạn tranh luận do hub đếm, ảnh bằng chứng, chống lặp agent↔agent
 - [x] **Phase 5**: `tcm resume <TICKET>` + `get_summary` (tóm tắt phòng khi vào lại), báo cáo B7 qua `submit_report` (có phiên bản, sửa trên web), đóng / mở lại ticket (không ghi gì lên Backlog: báo cáo tải .md / copy markdown)
 - [x] **Daily 3**: DEV/QA chạy ngầm trên hub (xem / ẩn terminal trên web), chèn tin nhắn giữa chừng vào context, nhắc lại tin chưa trả lời, đánh thức agent đang nghỉ khi user nhắn (kể cả sau khi duyệt báo cáo)
+- [x] **Giao diện kiểu ChatGPT**: sidebar phòng (tìm `Ctrl+K`, thu gọn), tin nhắn dạng hội thoại, composer bo tròn (người nhận, loại tin, đính kèm ảnh), panel Thành viên / Bug / Terminal bên phải (vừa xem terminal vừa chat), sáng / tối, mobile; **Phòng mới** trên web thay cho `tcm start`
 - [ ] **Phase 6**: file kinh nghiệm theo dự án, số liệu qua nhiều ticket

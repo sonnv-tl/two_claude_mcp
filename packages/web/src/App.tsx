@@ -1,530 +1,346 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { BROADCAST, MESSAGE_TYPES, type ChatMessage, type MessageType, type Participant } from "@tcm/shared";
-import { useRoom, useRooms, type OutgoingMessage } from "./useRoom";
-import { KickoffDialog } from "./KickoffDialog";
-import { BugPanel, Stepper } from "./Board";
-import { ReportDialog } from "./ReportDialog";
-import { TerminalPanel } from "./TerminalPanel";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ImagePlus, SquarePen, Users } from "lucide-react";
+import type { ChatMessage, MessageType } from "@tcm/shared";
+import { useRoom, useRooms } from "./useRoom";
+import { useAttentionAlerts, useHashRoom, useLocalStorage, useMediaQuery, useTheme } from "./hooks";
+import { colorOf as colorOfIn } from "./lib/colors";
+import { errText } from "./lib/format";
+import { postJson, roomApi } from "./lib/api";
+import { Sidebar } from "./components/Sidebar";
+import { ChatHeader, type Panel } from "./components/ChatHeader";
+import { MessageList, type MessageListHandle } from "./components/MessageList";
+import { Composer, type ComposerHandle } from "./components/Composer";
+import { SidePanel } from "./components/SidePanel";
+import { TerminalDock } from "./components/TerminalDock";
+import { KickoffDialog } from "./components/KickoffDialog";
+import { ReportDialog } from "./components/ReportDialog";
+import { NewRoomDialog } from "./components/NewRoomDialog";
 
-const HUMAN = "user";
-const USER_TYPES: MessageType[] = ["chat", "question", "handoff"];
-
-const TYPE_LABEL: Record<MessageType, string> = {
-  chat: "chat",
-  question: "câu hỏi",
-  ac_deviation: "lệch AC",
-  test_case: "test case",
-  bug_report: "bug",
-  handoff: "bàn giao",
-  report: "báo cáo",
-  system: "hệ thống",
-};
-
-const ROLE_COLOR: Record<string, string> = { dev: "var(--c-dev)", qa: "var(--c-qa)", user: "var(--c-user)" };
-const PALETTE = ["var(--c-1)", "var(--c-2)", "var(--c-3)", "var(--c-4)"];
-
-function colorOf(name: string, participants: Participant[]) {
-  const role = participants.find((p) => p.name === name)?.role?.toLowerCase() ?? "";
-  if (ROLE_COLOR[name]) return ROLE_COLOR[name];
-  if (ROLE_COLOR[role]) return ROLE_COLOR[role];
-  let h = 0;
-  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return PALETTE[h % PALETTE.length];
-}
-
-/** Âm thanh + thông báo desktop khi agent cần user ở terminal, hoặc hỏi user */
-function useAttentionAlerts(room: string | null, participants: Participant[]) {
-  const prev = useRef(new Map<string, string | null>());
-  useEffect(() => {
-    if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission();
-  }, []);
-  useEffect(() => {
-    prev.current = new Map();
-  }, [room]);
-  useEffect(() => {
-    for (const p of participants) {
-      const before = prev.current.get(p.name);
-      if (p.attention && p.attention !== before && prev.current.has(p.name)) alertUser(`${p.name}: ${p.attention}`);
-      prev.current.set(p.name, p.attention);
-    }
-  }, [participants]);
-}
-
-function alertUser(text: string) {
-  try {
-    const ctx = new AudioContext();
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.frequency.value = 880;
-    g.gain.setValueAtTime(0.15, ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-    o.connect(g).connect(ctx.destination);
-    o.start();
-    o.stop(ctx.currentTime + 0.4);
-  } catch {
-    /* trình duyệt chặn âm thanh khi chưa tương tác */
-  }
-  if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
-    new Notification("Team Hub", { body: text });
-  }
-}
-
-function useHashRoom(): [string | null, (r: string) => void] {
-  const read = () => decodeURIComponent(location.hash.replace(/^#\/?/, "")) || null;
-  const [room, setRoom] = useState<string | null>(read);
-  useEffect(() => {
-    const on = () => setRoom(read());
-    window.addEventListener("hashchange", on);
-    return () => window.removeEventListener("hashchange", on);
-  }, []);
-  return [room, (r) => (location.hash = `/${encodeURIComponent(r)}`)];
-}
-
-/** Terminal đang mở trong popup (theo phòng; tải lại trang thì đóng) */
-function useOpenTerms(room: string | null) {
-  const [open, setOpen] = useState<string[]>([]);
-  useEffect(() => setOpen([]), [room]);
-  const toggle = (name: string, want?: boolean) =>
-    setOpen((cur) => {
-      const on = want ?? !cur.includes(name);
-      return on ? (cur.includes(name) ? cur : [...cur, name]) : cur.filter((n) => n !== name);
-    });
-  return { openTerms: open, toggleTerm: toggle, closeTerms: () => setOpen([]) };
-}
+type Dialog = null | "new" | "kickoff" | "report";
 
 export function App() {
   const { rooms, reload: reloadRooms } = useRooms();
   const [room, setRoom] = useHashRoom();
-  const { messages, participants, conn, send, onDuty, setDuty, board, updateBug, terms, raw, openTerm, startAgent, stopAgent, deleted } = useRoom(room);
-  const { openTerms, toggleTerm, closeTerms } = useOpenTerms(room);
-  const termOf = (name: string) => terms.find((t) => t.name === name);
-  const shownTerms = openTerms.filter((n) => termOf(n));
-  const act = (p: Promise<unknown>) => void p.catch((e) => alert(e instanceof Error ? e.message : String(e)));
-  const [tab, setTab] = useState<"people" | "bugs">("people");
-  const openBugs = board.bugs.filter((b) => ["open", "reopened", "fixed", "disputed", "need_user"].includes(b.status)).length;
-  const needUser = board.bugs.some((b) => b.status === "need_user");
-  // Có bug chờ phân xử → mở tab Bug
-  useEffect(() => {
-    if (needUser) setTab("bugs");
-  }, [needUser]);
-  const jump = (id: number) => {
-    setHidden(new Set());
-    requestAnimationFrame(() => {
-      const el = document.getElementById(`m${id}`);
-      el?.scrollIntoView({ behavior: "smooth", block: "center" });
-      el?.classList.add("flash");
-      setTimeout(() => el?.classList.remove("flash"), 1600);
-    });
-  };
-  useAttentionAlerts(room, participants);
+  const { messages, participants, conn, send, onDuty, setDuty, board, updateBug, terms, raw, openTerm, startAgent, stopAgent, upload, deleted } =
+    useRoom(room);
+  const [theme, setTheme] = useTheme();
+  const wide = useMediaQuery("(min-width: 900px)");
+  const roomy = useMediaQuery("(min-width: 1200px)");
+  const [sidebarPref, setSidebarPref] = useLocalStorage("tcm.sidebar", true);
+  const [mobileNav, setMobileNav] = useState(false);
+  const sidebarShown = wide ? sidebarPref : mobileNav;
+
+  const [panel, setPanel] = useState<Panel>(null);
+  const [termOpen, setTermOpen] = useState<string[]>([]);
+  const [termMax, setTermMax] = useState(false);
+  const [dockWidth, setDockWidth] = useLocalStorage("tcm.dockWidth", 640);
+  const [dialog, setDialog] = useState<Dialog>(null);
   const [hidden, setHidden] = useState<Set<MessageType>>(new Set());
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
-  const [kickoffOpen, setKickoffOpen] = useState(false);
-  const [reportOpen, setReportOpen] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const list = useRef<MessageListHandle>(null);
+  const composer = useRef<ComposerHandle>(null);
 
+  const colorOf = useCallback((name: string) => colorOfIn(name, participants), [participants]);
+  const info = rooms.find((r) => r.name === room);
+  const act = (p: Promise<unknown>) => void p.catch((e) => alert(errText(e)));
+  useAttentionAlerts(room, participants);
+
+  // Đổi phòng: đóng panel, bỏ trả lời
   useEffect(() => {
     setReplyTo(null);
-    setReportOpen(false);
+    setPanel(null);
+    setTermOpen([]);
+    setTermMax(false);
+    setDialog((d) => (d === "new" ? d : null));
+    setMobileNav(false);
   }, [room]);
 
   // Mặc định mở phòng hoạt động gần nhất
   useEffect(() => {
     if (!room && rooms.length) setRoom(rooms[0].name);
-  }, [room, rooms]);
+  }, [room, rooms, setRoom]);
+
+  // Có bug chờ phân xử → mở bảng bug (nếu đang không mở panel nào)
+  const needUser = board.bugs.some((b) => b.status === "need_user");
+  useEffect(() => {
+    if (needUser) setPanel((p) => p ?? "bugs");
+  }, [needUser]);
 
   // Phòng đang xem bị xoá (tab này hoặc tab khác) → sang phòng khác
   useEffect(() => {
     if (!deleted || deleted !== room) return;
     reloadRooms();
     const next = rooms.find((r) => r.name !== deleted);
-    if (next) setRoom(next.name);
-    else history.replaceState(null, "", location.pathname);
+    setRoom(next?.name ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deleted]);
 
-  const deleteRoom = async () => {
-    if (!room) return;
-    const info = rooms.find((r) => r.name === room);
-    const running = terms.filter((t) => t.running).map((t) => t.name);
+  const deleteRoom = async (name: string) => {
+    const r = rooms.find((x) => x.name === name);
+    const running = name === room ? terms.filter((t) => t.running).map((t) => t.name) : [];
     const ok = confirm(
-      `Xoá phòng #${room}?\n\n` +
-        `Mất toàn bộ ${info?.messageCount ?? 0} tin nhắn, bảng bug, tiến độ, báo cáo B7, ảnh và thông tin kickoff của phòng.` +
-        (running.length ? `\nSession đang chạy ngầm (${running.join(", ")}) sẽ bị tắt.` : "") +
-        "\n\nKhông hoàn tác được.",
+      `Xoá phòng ${name}?\n\n` +
+        `Mất toàn bộ ${r?.messageCount ?? 0} tin nhắn, bảng bug, tiến độ, báo cáo B7, ảnh và thông tin kickoff của phòng.\n` +
+        (running.length ? `Session đang chạy ngầm (${running.join(", ")}) sẽ bị tắt.\n` : "Session chạy ngầm của phòng (nếu có) sẽ bị tắt.\n") +
+        "\nKhông hoàn tác được.",
     );
     if (!ok) return;
     try {
-      const r = await fetch(`/api/rooms/${encodeURIComponent(room)}/delete`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`);
+      await postJson(roomApi(name, "delete"));
       reloadRooms();
-      const next = rooms.find((x) => x.name !== room);
-      if (next) setRoom(next.name);
-      else history.replaceState(null, "", location.pathname);
+      if (name === room) setRoom(rooms.find((x) => x.name !== name)?.name ?? null);
     } catch (e) {
-      alert(`Không xoá được phòng: ${e instanceof Error ? e.message : String(e)}`);
+      alert(`Không xoá được phòng: ${errText(e)}`);
     }
   };
 
+  // ---------- terminal ----------
+  const toggleTerm = useCallback((name: string, want?: boolean) => {
+    setTermOpen((cur) => {
+      const on = want ?? !cur.includes(name);
+      return on ? (cur.includes(name) ? cur : [...cur, name]) : cur.filter((n) => n !== name);
+    });
+  }, []);
+  /** Mở panel terminal; chưa chọn agent nào thì mở agent đang chạy đầu tiên */
+  const showPanel = (p: Panel) => {
+    if (p === "terminal" && !termOpen.some((n) => terms.some((t) => t.name === n))) {
+      const first = terms.find((t) => t.running) ?? terms[0];
+      if (first) setTermOpen([first.name]);
+    }
+    if (p !== "terminal") setTermMax(false);
+    setPanel(p);
+  };
+  const toggleTermFromPeople = (name: string) => {
+    if (panel !== "terminal") {
+      setTermOpen((cur) => (cur.includes(name) ? cur : [...cur, name]));
+      setPanel("terminal");
+    } else toggleTerm(name);
+  };
+
+  /** Kéo cạnh trái dock terminal để đổi độ rộng */
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const x0 = e.clientX;
+    const w0 = dockWidth;
+    const move = (ev: PointerEvent) => setDockWidth(Math.max(380, Math.min(innerWidth - 360, w0 + x0 - ev.clientX)));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.classList.remove("resizing");
+    };
+    document.body.classList.add("resizing");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  // ---------- tin nhắn ----------
   const visible = useMemo(() => messages.filter((m) => !hidden.has(m.type)), [messages, hidden]);
   const byId = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages]);
-
-  const toggle = (t: MessageType) =>
+  const toggleType = (t: MessageType) =>
     setHidden((s) => {
       const n = new Set(s);
-      n.has(t) ? n.delete(t) : n.add(t);
+      if (n.has(t)) n.delete(t);
+      else n.add(t);
       return n;
     });
+  const onJump = useCallback(
+    (id: number) => {
+      if (termMax) setTermMax(false);
+      setHidden(new Set());
+      requestAnimationFrame(() => list.current?.jump(id));
+    },
+    [termMax],
+  );
+  const onOpenBugs = useCallback(() => setPanel("bugs"), []);
 
-  return (
-    <div className="layout">
-      {kickoffOpen && room && <KickoffDialog room={room} onClose={() => setKickoffOpen(false)} />}
-      {reportOpen && room && <ReportDialog room={room} board={board} send={send} onClose={() => setReportOpen(false)} />}
-      {shownTerms.length > 0 && conn === "open" && (
-        // Không đóng bằng Esc: Esc cần cho Claude trong terminal (dừng lượt đang chạy)
-        <div className="modal-backdrop term-backdrop" onMouseDown={(e) => e.target === e.currentTarget && closeTerms()}>
-          <div className="term-modal" role="dialog" aria-label="Terminal agent">
-            <header className="term-modal-head">
-              <strong>🖥 Terminal · #{room}</strong>
-              <span className="small muted">Đóng chỉ ẩn đi, session vẫn chạy ngầm trên hub</span>
-              <span className="spacer" />
-              {terms.map((t) => (
-                <button
-                  key={t.name}
-                  className={`chip term-btn ${openTerms.includes(t.name) ? "on" : ""}`}
-                  style={{ color: colorOf(t.name, participants) }}
-                  title={openTerms.includes(t.name) ? `Ẩn ${t.name}` : `Xem thêm ${t.name}`}
-                  onClick={() => toggleTerm(t.name)}
-                >
-                  {t.name}{t.running ? "" : " (tắt)"}
-                </button>
-              ))}
-              <button className="link" onClick={closeTerms}>✕ đóng</button>
-            </header>
-            <div className="term-modal-body">
-              {shownTerms.map((n) => (
-                <TerminalPanel
-                  key={`${room}/${n}`}
-                  name={n}
-                  info={termOf(n)}
-                  color={colorOf(n, participants)}
-                  openTerm={openTerm}
-                  raw={raw}
-                  onStart={() => act(startAgent(n))}
-                  onStop={() => act(stopAgent(n))}
-                  onClose={() => toggleTerm(n, false)}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragging(false);
+    const files = [...e.dataTransfer.files].filter((f) => f.type.startsWith("image/"));
+    if (files.length) composer.current?.addFiles(files);
+  };
+
+  const disabled = !room || conn !== "open";
+  const sideOverlay = !roomy; // màn hẹp: panel nổi đè lên khung chat
+  const showTerm = panel === "terminal" && !!room;
+
+  const emptyRoom = (
+    <div className="hero">
+      <h1>{room ? `Bắt đầu trao đổi trong ${room}` : "Team Hub"}</h1>
+      <p className="muted">
+        {participants.some((p) => p.kind === "agent")
+          ? "Chưa có tin nhắn. Nhắn cho cả phòng, hoặc gõ @dev / @qa ở đầu để gửi riêng."
+          : "Phòng chưa có agent. Gửi kickoff để DEV/QA nhận ngay khi vào phòng."}
+      </p>
+      {room && (
+        <button className="btn" onClick={() => setDialog("kickoff")}>
+          Soạn kickoff ticket
+        </button>
       )}
-      <aside className="rooms">
-        <h1>Team Hub</h1>
-        <div className="section-title">Phòng</div>
-        {rooms.length === 0 && <div className="muted small">Chưa có phòng. Khởi động một Claude session có bridge để tạo phòng.</div>}
-        {rooms.map((r) => (
-          <button
-            key={r.name}
-            className={`room ${r.name === room ? "active" : ""} ${r.closedAt ? "closed" : ""}`}
-            onClick={() => setRoom(r.name)}
-            title={r.closedAt ? `Đã đóng ${new Date(r.closedAt).toLocaleString("vi-VN", { hour12: false })}` : undefined}
-          >
-            <span className="room-name">{r.closedAt ? "✓ " : "#"}{r.name}</span>
-            <span className="muted small">{r.messageCount}</span>
-          </button>
-        ))}
-      </aside>
-
-      <main className="timeline">
-        <header className="timeline-head">
-          <div>
-            <strong>{room ? `#${room}` : "—"}</strong>
-            <span className={`conn conn-${conn}`}>{conn === "open" ? "live" : conn === "connecting" ? "đang kết nối…" : "mất kết nối"}</span>
-            <button
-              className={`duty ${onDuty ? "on" : "off"}`}
-              disabled={conn !== "open"}
-              title={onDuty ? "Agent ở lại chờ việc sau mỗi lượt. Bấm để cho agent kết thúc lượt." : "Agent sẽ kết thúc lượt khi xong việc. Bấm để bật lại."}
-              onClick={() => void setDuty(!onDuty).catch((e) => alert(e.message))}
-            >
-              {onDuty ? "● Đang trực" : "○ Nghỉ trực"}
-            </button>
-            <button className="duty" disabled={!room} onClick={() => setKickoffOpen(true)} title="Soạn và gửi tin kickoff ticket cho @all">
-              🎫 Kickoff
-            </button>
-            <button
-              className={`duty ${board.report && !board.closedAt ? "report-ready" : ""}`}
-              disabled={!room}
-              onClick={() => setReportOpen(true)}
-              title="Báo cáo B7: xem / sửa, tải .md, đóng ticket"
-            >
-              {board.closedAt ? "✓ Đã đóng" : board.report ? "📄 Báo cáo B7" : "🏁 Đóng ticket"}
-            </button>
-            <button
-              className="duty danger"
-              disabled={!room || !rooms.some((r) => r.name === room)}
-              onClick={() => void deleteRoom()}
-              title="Xoá hẳn phòng: tin nhắn, bug, báo cáo B7, ảnh. Tắt session chạy ngầm. Không hoàn tác được."
-            >
-              🗑 Xoá phòng
-            </button>
-          </div>
-          <div className="filters">
-            {MESSAGE_TYPES.map((t) => (
-              <button key={t} className={`chip type-${t} ${hidden.has(t) ? "off" : ""}`} onClick={() => toggle(t)}>
-                {TYPE_LABEL[t]}
-              </button>
-            ))}
-          </div>
-        </header>
-        <Stepper board={board} colorOf={(n) => colorOf(n, participants)} />
-        <MessageList messages={visible} byId={byId} participants={participants} onReply={setReplyTo} />
-        <Composer
-          key={room ?? ""}
-          participants={participants}
-          disabled={!room || conn !== "open"}
-          replyTo={replyTo}
-          onCancelReply={() => setReplyTo(null)}
-          onSend={async (m) => {
-            await send(m);
-            setReplyTo(null);
-          }}
-        />
-      </main>
-
-      <aside className="people">
-        <div className="tabs">
-          <button className={tab === "people" ? "active" : ""} onClick={() => setTab("people")}>Thành viên</button>
-          <button className={tab === "bugs" ? "active" : ""} onClick={() => setTab("bugs")}>
-            Bug {board.bugs.length > 0 && <span className="muted">{openBugs}/{board.bugs.length}</span>}
-            {(needUser || board.warning) && <span className="badge-dot" />}
-          </button>
-        </div>
-        {tab === "bugs" && (
-          <BugPanel board={board} participants={participants} onJump={jump} onUpdate={updateBug} disabled={conn !== "open"} />
-        )}
-        {tab === "people" && terms.some((t) => !participants.some((p) => p.name === t.name)) && (
-          <div className="person">
-            <span className="dot" />
-            <div className="small muted">
-              Chạy ngầm, chưa vào phòng:{" "}
-              {terms.filter((t) => !participants.some((p) => p.name === t.name)).map((t) => (
-                <button key={t.name} className={`chip term-btn ${openTerms.includes(t.name) ? "on" : ""}`} onClick={() => toggleTerm(t.name)}>
-                  🖥 {t.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        {tab === "people" && participants.map((p) => (
-          <div key={p.name} className={`person ${p.attention ? "alert" : ""}`}>
-            <span className={`dot ${p.online ? "on" : ""}`} />
-            <div>
-              <div>
-                <strong style={{ color: colorOf(p.name, participants) }}>{p.name}</strong>{" "}
-                <span className="muted small">{p.role || p.kind}</span>
-                {p.online && p.kind === "agent" && (
-                  <span
-                    className={`chip ${p.waiting || p.idle ? "idle" : "busy"}`}
-                    title={p.idle ? "Đã kết thúc lượt. Nhắn cho nó: hub tự đánh thức nếu terminal chạy ngầm trên hub" : undefined}
-                  >
-                    {p.waiting ? "chờ việc" : p.idle ? "nghỉ" : "đang làm"}
-                  </span>
-                )}
-                {termOf(p.name) && (
-                  <button
-                    className={`chip term-btn ${openTerms.includes(p.name) ? "on" : ""}`}
-                    title={openTerms.includes(p.name) ? "Ẩn terminal (session vẫn chạy ngầm)" : "Xem terminal của agent"}
-                    onClick={() => toggleTerm(p.name)}
-                  >
-                    🖥 {termOf(p.name)!.running ? "" : "tắt"}
-                  </button>
-                )}
-              </div>
-              {p.attention && <div className="small attention">{p.attention}</div>}
-              {p.status && <div className="small status">{p.status}</div>}
-            </div>
-          </div>
-        ))}
-      </aside>
     </div>
   );
-}
-
-function Composer({
-  participants,
-  disabled,
-  replyTo,
-  onCancelReply,
-  onSend,
-}: {
-  participants: Participant[];
-  disabled: boolean;
-  replyTo: ChatMessage | null;
-  onCancelReply: () => void;
-  onSend: (m: OutgoingMessage) => Promise<void>;
-}) {
-  const [text, setText] = useState("");
-  const [to, setTo] = useState(BROADCAST);
-  const [type, setType] = useState<MessageType>("chat");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const recipients = participants.filter((p) => p.name !== HUMAN);
-
-  // Bấm "trả lời" một tin → gửi lại cho người đó
-  useEffect(() => {
-    if (replyTo && replyTo.from !== HUMAN && replyTo.from !== "hub") setTo(replyTo.from);
-    if (replyTo) inputRef.current?.focus();
-  }, [replyTo]);
-
-  const submit = async () => {
-    let content = text.trim();
-    let target = to;
-    // "@qa nội dung" ở đầu tin → đổi người nhận
-    const m = content.match(/^@([\w.-]+)\s+([\s\S]+)$/);
-    if (m && (m[1] === "all" || recipients.some((p) => p.name === m[1]))) {
-      target = m[1] === "all" ? BROADCAST : m[1];
-      content = m[2].trim();
-    }
-    if (!content || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await onSend({ to: target, content, type, replyTo: replyTo?.id ?? null });
-      setText("");
-      setType("chat");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-      inputRef.current?.focus();
-    }
-  };
 
   return (
-    <footer className="composer">
-      {replyTo && (
-        <div className="composer-reply small">
-          ↳ trả lời #{replyTo.id} của <strong>{replyTo.from}</strong>: {plain(replyTo.content).slice(0, 100)}
-          <button className="link" onClick={onCancelReply}>huỷ</button>
-        </div>
+    <div className={`app ${sidebarShown ? "with-sidebar" : ""}`}>
+      {sidebarShown && (
+        <>
+          {!wide && <div className="scrim" onClick={() => setMobileNav(false)} />}
+          <Sidebar
+            rooms={rooms}
+            room={room}
+            onSelect={(r) => {
+              setRoom(r);
+              setMobileNav(false);
+            }}
+            onNew={() => setDialog("new")}
+            onDelete={(r) => void deleteRoom(r)}
+            onCollapse={() => (wide ? setSidebarPref(false) : setMobileNav(false))}
+            theme={theme}
+            setTheme={setTheme}
+          />
+        </>
       )}
-      {error && <div className="composer-error small">{error}</div>}
-      <div className="composer-row">
-        <select value={to} onChange={(e) => setTo(e.target.value)} disabled={disabled} title="Người nhận">
-          <option value={BROADCAST}>@all (cả phòng)</option>
-          {recipients.map((p) => (
-            <option key={p.name} value={p.name}>
-              @{p.name}{p.online ? "" : " (offline)"}
-            </option>
-          ))}
-        </select>
-        <select value={type} onChange={(e) => setType(e.target.value as MessageType)} disabled={disabled} title="Loại tin">
-          {USER_TYPES.map((t) => (
-            <option key={t} value={t}>{TYPE_LABEL[t]}</option>
-          ))}
-        </select>
-        <textarea
-          ref={inputRef}
-          value={text}
-          rows={Math.min(8, Math.max(1, text.split("\n").length))}
-          placeholder={disabled ? "Chưa kết nối…" : "Nhắn cho team… (Enter gửi · Shift+Enter xuống dòng · @qa để gửi riêng)"}
-          disabled={disabled}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              void submit();
-            }
+
+      <div className="main-area">
+        <main
+          className={`chat ${showTerm && termMax ? "hidden" : ""}`}
+          onDragOver={(e) => {
+            if (!room || ![...e.dataTransfer.types].includes("Files")) return;
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={(e) => e.currentTarget === e.target && setDragging(false)}
+          onDrop={onDrop}
+        >
+          <ChatHeader
+            room={room}
+            info={info}
+            conn={conn}
+            onDuty={onDuty}
+            board={board}
+            participants={participants}
+            terms={terms}
+            colorOf={colorOf}
+            sidebarHidden={!sidebarShown}
+            onShowSidebar={() => (wide ? setSidebarPref(true) : setMobileNav(true))}
+            onNew={() => setDialog("new")}
+            hidden={hidden}
+            toggleType={toggleType}
+            resetTypes={() => setHidden(new Set())}
+            panel={panel}
+            setPanel={showPanel}
+            onKickoff={() => setDialog("kickoff")}
+            onReport={() => setDialog("report")}
+            onToggleDuty={() => act(setDuty(!onDuty))}
+            onDelete={() => room && void deleteRoom(room)}
+          />
+
+          {room ? (
+            <>
+              <MessageList
+                ref={list}
+                messages={visible}
+                byId={byId}
+                colorOf={colorOf}
+                onReply={setReplyTo}
+                onOpenBugs={onOpenBugs}
+                empty={messages.length ? <div className="hero muted">Không có tin nào thuộc loại đang lọc.</div> : emptyRoom}
+              />
+              <Composer
+                key={room}
+                ref={composer}
+                participants={participants}
+                disabled={disabled}
+                replyTo={replyTo}
+                onCancelReply={() => setReplyTo(null)}
+                upload={upload}
+                placeholder={`Nhắn cho team trong ${room}…`}
+                onSend={async (m) => {
+                  await send(m);
+                  setReplyTo(null);
+                  list.current?.toBottom();
+                }}
+              />
+            </>
+          ) : (
+            <div className="welcome">
+              <div className="hero">
+                <span className="hero-logo">
+                  <Users className="ic" />
+                </span>
+                <h1>Bắt đầu ticket mới</h1>
+                <p className="muted">Nhập mã ticket và link Figma: hub chạy ngầm DEV + QA trong repo rồi gửi kickoff cho cả hai.</p>
+                <button className="btn primary lg" onClick={() => setDialog("new")}>
+                  <SquarePen className="ic" /> Phòng mới
+                </button>
+              </div>
+            </div>
+          )}
+
+          {dragging && (
+            <div className="drop-overlay">
+              <ImagePlus className="ic lg" />
+              Thả ảnh để đính kèm vào tin nhắn
+            </div>
+          )}
+        </main>
+
+        {room && (panel === "people" || panel === "bugs") && (
+          <>
+            {sideOverlay && <div className="scrim panel-scrim" onClick={() => setPanel(null)} />}
+            <SidePanel
+              tab={panel}
+              setTab={(t) => setPanel(t)}
+              onClose={() => setPanel(null)}
+              board={board}
+              participants={participants}
+              terms={terms}
+              colorOf={colorOf}
+              openTerms={[]}
+              onToggleTerm={toggleTermFromPeople}
+              onJump={onJump}
+              onUpdateBug={updateBug}
+              disabled={disabled}
+            />
+          </>
+        )}
+
+        {showTerm && (
+          <div className={`dock-wrap ${termMax ? "max" : ""}`} style={termMax || !wide ? undefined : { width: dockWidth }}>
+            {!termMax && wide && <div className="resize-handle" onPointerDown={startResize} title="Kéo để đổi độ rộng" />}
+            <TerminalDock
+              room={room!}
+              terms={terms}
+              open={termOpen}
+              toggle={toggleTerm}
+              onClose={() => (setPanel(null), setTermMax(false))}
+              maximized={termMax}
+              setMaximized={setTermMax}
+              colorOf={colorOf}
+              openTerm={openTerm}
+              raw={raw}
+              onStart={(n) => act(startAgent(n))}
+              onStop={(n) => act(stopAgent(n))}
+              connected={conn === "open"}
+            />
+          </div>
+        )}
+      </div>
+
+      {dialog === "new" && (
+        <NewRoomDialog
+          rooms={rooms}
+          onClose={() => setDialog(null)}
+          onCreated={(r) => {
+            setDialog(null);
+            reloadRooms();
+            setRoom(r);
           }}
         />
-        <button className="send" onClick={() => void submit()} disabled={disabled || busy || !text.trim()}>
-          Gửi
-        </button>
-      </div>
-    </footer>
-  );
-}
-
-/** Trích dẫn ngắn: bỏ ký tự markdown, ảnh thành 🖼 */
-function plain(md: string) {
-  return md
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, "🖼")
-    .replace(/[*_`#>|]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/** Ảnh bằng chứng: thu nhỏ trong tin, bấm mở tab mới */
-const MD_COMPONENTS = {
-  img: ({ src, alt }: { src?: string; alt?: string }) => (
-    <a href={src} target="_blank" rel="noreferrer" className="shot">
-      <img src={src} alt={alt ?? ""} loading="lazy" />
-    </a>
-  ),
-  a: ({ href, children }: { href?: string; children?: ReactNode }) => (
-    <a href={href} target="_blank" rel="noreferrer">{children}</a>
-  ),
-};
-
-function MessageList({
-  messages,
-  byId,
-  participants,
-  onReply,
-}: {
-  messages: ChatMessage[];
-  byId: Map<number, ChatMessage>;
-  participants: Participant[];
-  onReply: (m: ChatMessage) => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
-
-  const onScroll = () => {
-    const el = ref.current!;
-    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  };
-  useLayoutEffect(() => {
-    if (stick.current && ref.current) ref.current.scrollTop = ref.current.scrollHeight;
-  }, [messages]);
-
-  return (
-    <div className="messages" ref={ref} onScroll={onScroll}>
-      {messages.length === 0 && <div className="empty muted">Chưa có tin nhắn.</div>}
-      {messages.map((m) =>
-        m.type === "system" ? (
-          <div key={m.id} className="system small muted">
-            {m.content} · {new Date(m.createdAt).toLocaleTimeString("vi-VN", { hour12: false })}
-          </div>
-        ) : (
-          <article key={m.id} id={`m${m.id}`} className="msg" style={{ borderLeftColor: colorOf(m.from, participants) }}>
-            <div className="msg-head">
-              <strong style={{ color: colorOf(m.from, participants) }}>{m.from}</strong>
-              <span className="muted">→ {m.to}</span>
-              {m.type !== "chat" && <span className={`chip type-${m.type}`}>{TYPE_LABEL[m.type]}</span>}
-              <span className="muted small">
-                #{m.id} · {new Date(m.createdAt).toLocaleTimeString("vi-VN", { hour12: false })}
-              </span>
-              <button className="link small reply-btn" onClick={() => onReply(m)}>trả lời</button>
-            </div>
-            {m.replyTo && (
-              <a className="reply small muted" href={`#m${m.replyTo}`} onClick={(e) => {
-                e.preventDefault();
-                document.getElementById(`m${m.replyTo}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
-              }}>
-                ↳ trả lời #{m.replyTo}
-                {byId.get(m.replyTo) && `: ${plain(byId.get(m.replyTo)!.content).slice(0, 80)}`}
-              </a>
-            )}
-            <div className="md">
-              <Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{m.content}</Markdown>
-            </div>
-          </article>
-        ),
       )}
+      {dialog === "kickoff" && room && <KickoffDialog room={room} onClose={() => setDialog(null)} />}
+      {dialog === "report" && room && <ReportDialog room={room} board={board} send={send} onClose={() => setDialog(null)} />}
     </div>
   );
 }

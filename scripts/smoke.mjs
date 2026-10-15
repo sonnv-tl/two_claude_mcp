@@ -184,6 +184,12 @@ try {
 
   const bad2 = await web.request({ op: "status", text: "x" });
   check("viewer không được đổi status", bad2.op === "error", JSON.stringify(bad2));
+  // Web đính kèm ảnh vào tin (dán / kéo thả trong composer)
+  const dot = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const up = await web.request({ op: "upload", filename: "dan-anh.png", data: dot });
+  check("viewer (web) tải ảnh lên được", up.op === "result" && up.data.url?.startsWith(`/att/${room}/`), JSON.stringify(up));
+  const upBad = await web.request({ op: "upload", filename: "x.exe", data: dot });
+  check("viewer tải file không phải ảnh → lỗi", upBad.op === "error", JSON.stringify(upBad));
 
   // ---- Phase 4: bảng ticket (bước, bug, phân xử, ảnh, chống lặp) ----
   const HTTP = `http://127.0.0.1:${port}`;
@@ -213,8 +219,9 @@ try {
   // dev chạy channel mode → tin tới qua push
   const pushedText = () => devCh.pushed.map((p) => `[${p.meta.type}] ${p.meta.from} → ${p.meta.to}\n${p.content}`).join("\n---\n");
   const devBug = { text: pushedText() };
-  const attUrl = devBug.text.match(/\((\/att\/[^)]+)\)/)?.[1];
-  check("dev nhận bug_report có ảnh /att/…", devBug.text.includes("[bug_report]") && devBug.text.includes("BUG-01") && !!attUrl, devBug.text);
+  // Bridge đổi link /att/… thành URL đầy đủ của hub (hoặc file đã tải về máy) để agent mở được ảnh
+  const attUrl = devBug.text.match(/\(https?:\/\/[^/)]+(\/att\/[^)]+)\)/)?.[1];
+  check("dev nhận bug_report có ảnh (URL hub, kèm hướng dẫn Read)", devBug.text.includes("[bug_report]") && devBug.text.includes("BUG-01") && !!attUrl && devBug.text.includes("ảnh đính kèm"), devBug.text);
   const att = attUrl && (await fetch(`${HTTP}${attUrl}`));
   check("hub phục vụ ảnh đính kèm", att?.status === 200 && att.headers.get("content-type") === "image/png", String(att?.status));
 

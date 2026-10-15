@@ -150,8 +150,10 @@ export function useRoom(room: string | null) {
   );
   const startAgent = useCallback((name: string) => request<boolean>({ op: "agent_start", name }), [request]);
   const stopAgent = useCallback((name: string) => request<boolean>({ op: "agent_stop", name }), [request]);
+  /** Tải ảnh (base64) lên hub, trả về { url } để chèn vào markdown */
+  const upload = useCallback((filename: string, data: string) => request<{ url: string }>({ op: "upload", filename, data }), [request]);
 
-  return { messages, participants, conn, send, onDuty, setDuty, board, updateBug, terms, raw, openTerm, startAgent, stopAgent, deleted };
+  return { messages, participants, conn, send, onDuty, setDuty, board, updateBug, terms, raw, openTerm, startAgent, stopAgent, upload, deleted };
 }
 
 export function useRooms(intervalMs = 5000) {

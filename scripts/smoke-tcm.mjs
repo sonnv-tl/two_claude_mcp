@@ -10,7 +10,15 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const port = 5100 + Math.floor(Math.random() * 90); // tránh 4747 (hub thật)
 const tmp = mkdtempSync(join(tmpdir(), "tcm-"));
 const repo = join(tmp, "repo");
-const env = { ...process.env, HUB_PORT: String(port), HUB_DB: join(tmp, "hub.db"), HUB_LOG: join(tmp, "hub.log"), TCM_LOG: join(tmp, "tcm.log") };
+const env = {
+  ...process.env,
+  HUB_PORT: String(port),
+  HUB_DB: join(tmp, "hub.db"),
+  HUB_LOG: join(tmp, "hub.log"),
+  TCM_LOG: join(tmp, "tcm.log"),
+  // Hub chạy agent giả thay cho claude (web mở phòng mới qua /api/start)
+  HUB_AGENT_CMD: JSON.stringify([process.execPath, "-e", "setInterval(() => {}, 1e6)"]),
+};
 const HUB = `http://127.0.0.1:${port}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -147,6 +155,22 @@ try {
   check("agent vào phòng SAU vẫn nhận kickoff (tin chưa đọc)", !!k2 && k2.content.includes("100000 / Password_1"), JSON.stringify(qa2.got));
   dev2.ws.close();
   qa2.ws.close();
+
+  // Web: Phòng mới (/api/repos + /api/start) giống tcm start trong repo
+  const repos = await (await fetch(`${HUB}/api/repos`)).json();
+  const mine = repos.find((r) => r.repoDir.toLowerCase() === resolve(repo).toLowerCase());
+  check("API repos: liệt kê repo đã dùng, đọc figma từ .team-hub.json", !!mine && mine.hasConfig && mine.figma === cfg.figma, JSON.stringify(repos));
+  const post = (path, body) =>
+    fetch(`${HUB}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then(async (r) => ({ status: r.status, data: await r.json() }));
+  const started = await post("/api/start", { ticket: "TL-WEB", figma: "https://www.figma.com/design/WEB/y?node-id=3-4", repo: { repoDir: repo } });
+  const webMeta = await (await fetch(`${HUB}/api/rooms/TL-WEB/meta`)).json();
+  check("API start: lưu meta (figma từ form, tài khoản từ .local)", started.status === 200 && webMeta.figma.includes("/WEB/") && webMeta.testAccount === "100000 / Password_1", JSON.stringify({ started, webMeta }));
+  check("API start: chạy ngầm DEV + QA", started.data.terms?.filter((t) => t.running).length === 2, JSON.stringify(started.data.terms));
+  const webMsgs = await (await fetch(`${HUB}/api/rooms/TL-WEB/messages`)).json();
+  check("API start: gửi kickoff tới @all", webMsgs.some((m) => m.from === "user" && m.to === "@all" && m.content.includes("Kickoff ticket TL-WEB")), JSON.stringify(webMsgs));
+  const noRepo = await post("/api/start", { ticket: "TL-X", repo: { repoDir: join(tmp, "khong-co") } });
+  check("API start: repo không tồn tại → 400", noRepo.status === 400 && noRepo.data.error.includes("repo"), JSON.stringify(noRepo));
+  await post("/api/rooms/TL-WEB/agents/stop", {});
 
   dev.ws.close();
   qa.ws.close();

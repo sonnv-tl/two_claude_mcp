@@ -366,7 +366,40 @@ export interface KickoffMeta {
   distro?: string;
 }
 
-export const KICKOFF_DEFAULTS = { planDir: "docs/plan", testcaseDir: "qa/testcases", runsDir: "qa/runs" } as const;
+/** Repo đích (giống launch của tcm start): đường dẫn Windows, hoặc repo trong WSL (đường dẫn Linux + distro) */
+export interface RepoRef {
+  repoDir: string;
+  wslCwd?: string;
+  distro?: string;
+}
+
+/** Repo đã từng chạy agent (lấy từ cấu hình chạy của các phòng): web chọn khi mở ticket mới */
+export interface RepoInfo extends RepoRef {
+  /** Tên hiển thị: đường dẫn WSL hoặc Windows */
+  label: string;
+  /** Phòng gần nhất dùng repo này */
+  lastRoom: string;
+  /** Có .team-hub.json / .team-hub.local.json */
+  hasConfig: boolean;
+  /** Link Figma mặc định trong .team-hub.json */
+  figma?: string;
+  testAccount?: string;
+  /** Lỗi đọc config hoặc repo không còn */
+  error?: string;
+}
+
+/** Web mở ticket mới (POST /api/start): giống `tcm start <ticket> --figma <url>` chạy trong repo */
+export interface StartTicketRequest {
+  ticket: string;
+  /** Mặc định = mã ticket */
+  room?: string;
+  figma?: string;
+  testAccount?: string;
+  notes?: string;
+  repo: RepoRef;
+}
+
+export const KICKOFF_DEFAULTS ={ planDir: "docs/plan", testcaseDir: "qa/testcases", runsDir: "qa/runs" } as const;
 
 export function buildKickoff(meta: KickoffMeta): string {
   const t = meta.ticket.trim();

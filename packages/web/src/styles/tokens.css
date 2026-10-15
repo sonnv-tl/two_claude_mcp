@@ -1,0 +1,121 @@
+/* Bảng màu kiểu ChatGPT: sáng (mặc định), tối (theo hệ thống hoặc chọn tay) */
+:root {
+  --bg: #ffffff;
+  --sidebar: #f9f9f9;
+  --surface: #ffffff;
+  --surface-2: #f4f4f4; /* bong bóng tin user, hover */
+  --surface-3: #ececec; /* đang chọn */
+  --border: #e5e5e5;
+  --border-strong: #d0d0d0;
+  --text: #0d0d0d;
+  --text-2: #5d5d5d;
+  --muted: #8f8f8f;
+  --accent: #0d0d0d; /* nút gửi */
+  --accent-fg: #ffffff;
+  --composer: #ffffff;
+  --code-bg: #f7f7f8;
+  --code-head: #ececf1;
+  --popover: #ffffff;
+  --scrim: rgb(0 0 0 / 0.35);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.06);
+  --shadow: 0 0 0 1px rgb(0 0 0 / 0.04), 0 4px 24px rgb(0 0 0 / 0.08);
+  --shadow-lg: 0 0 0 1px rgb(0 0 0 / 0.05), 0 16px 48px rgb(0 0 0 / 0.18);
+  --focus: #2f80ed;
+
+  --ok: #0f9d6b;
+  --danger: #e02e2a;
+  --warn: #c76a00;
+  --info: #2563eb;
+  --violet: #7c3aed;
+  --teal: #0d9488;
+
+  --c-dev: #2563eb;
+  --c-qa: #ea580c;
+  --c-user: #0f9d6b;
+  --c-1: #7c3aed;
+  --c-2: #db2777;
+  --c-3: #0891b2;
+  --c-4: #65a30d;
+
+  --radius: 12px;
+  --radius-lg: 20px;
+  --thread: 48rem;
+  --sidebar-w: 260px;
+  --font: ui-sans-serif, -apple-system, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", SFMono-Regular, Consolas, monospace;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #212121;
+  --sidebar: #171717;
+  --surface: #2a2a2a;
+  --surface-2: #303030;
+  --surface-3: #3a3a3a;
+  --border: #383838;
+  --border-strong: #4a4a4a;
+  --text: #ececec;
+  --text-2: #b4b4b4;
+  --muted: #8b8b8b;
+  --accent: #ececec;
+  --accent-fg: #0d0d0d;
+  --composer: #303030;
+  --code-bg: #171717;
+  --code-head: #2f2f2f;
+  --popover: #2f2f2f;
+  --scrim: rgb(0 0 0 / 0.55);
+  --shadow: 0 0 0 1px rgb(255 255 255 / 0.04), 0 4px 24px rgb(0 0 0 / 0.4);
+  --shadow-lg: 0 0 0 1px rgb(255 255 255 / 0.06), 0 16px 48px rgb(0 0 0 / 0.6);
+  --ok: #34d399;
+  --danger: #f87171;
+  --warn: #fbbf24;
+  --info: #60a5fa;
+  --violet: #a78bfa;
+  --teal: #2dd4bf;
+  --c-dev: #60a5fa;
+  --c-qa: #fb923c;
+  --c-user: #34d399;
+  --c-1: #a78bfa;
+  --c-2: #f472b6;
+  --c-3: #22d3ee;
+  --c-4: #a3e635;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #212121;
+    --sidebar: #171717;
+    --surface: #2a2a2a;
+    --surface-2: #303030;
+    --surface-3: #3a3a3a;
+    --border: #383838;
+    --border-strong: #4a4a4a;
+    --text: #ececec;
+    --text-2: #b4b4b4;
+    --muted: #8b8b8b;
+    --accent: #ececec;
+    --accent-fg: #0d0d0d;
+    --composer: #303030;
+    --code-bg: #171717;
+    --code-head: #2f2f2f;
+    --popover: #2f2f2f;
+    --scrim: rgb(0 0 0 / 0.55);
+    --shadow: 0 0 0 1px rgb(255 255 255 / 0.04), 0 4px 24px rgb(0 0 0 / 0.4);
+    --shadow-lg: 0 0 0 1px rgb(255 255 255 / 0.06), 0 16px 48px rgb(0 0 0 / 0.6);
+    --ok: #34d399;
+    --danger: #f87171;
+    --warn: #fbbf24;
+    --info: #60a5fa;
+    --violet: #a78bfa;
+    --teal: #2dd4bf;
+    --c-dev: #60a5fa;
+    --c-qa: #fb923c;
+    --c-user: #34d399;
+    --c-1: #a78bfa;
+    --c-2: #f472b6;
+    --c-3: #22d3ee;
+    --c-4: #a3e635;
+    color-scheme: dark;
+  }
+}

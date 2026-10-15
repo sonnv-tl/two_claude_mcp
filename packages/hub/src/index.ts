@@ -53,9 +53,12 @@ import {
   type ParticipantKind,
   type ServerOp,
   type TermInfo,
+  type RepoInfo,
+  type StartTicketRequest,
 } from "@tcm/shared";
 import { Store, HUMAN_NAME, type ParticipantRow } from "./db.js";
 import { Terminals, agentCommand, DEFAULT_ROLES, type RoomLaunch } from "./terminals.js";
+import { loadRepoConfig } from "./repo.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -427,8 +430,8 @@ function handle(conn: Conn, op: ClientOp) {
   }
 
   // Web (viewer) chỉ được gửi tin, dưới tên "user"
-  if (conn.kind === "viewer" && op.op !== "send" && op.op !== "duty" && op.op !== "bug_update")
-    return fail("Viewer chỉ được xem, gửi tin, bật/tắt trực, phân xử bug và điều khiển terminal");
+  if (conn.kind === "viewer" && op.op !== "send" && op.op !== "duty" && op.op !== "bug_update" && op.op !== "upload")
+    return fail("Viewer chỉ được xem, gửi tin, đính kèm ảnh, bật/tắt trực, phân xử bug và điều khiển terminal");
   const room = conn.room;
   const name = conn.kind === "viewer" ? HUMAN_NAME : conn.name;
   store.touch(room, name);
@@ -491,7 +494,7 @@ function handle(conn: Conn, op: ClientOp) {
       return reply(updateBug(room, name, conn.kind === "viewer", op));
     }
     case "report": {
-      if (conn.kind === "viewer") return fail("User sửa báo cáo trên web (nút 🏁)");
+      if (conn.kind === "viewer") return fail("User sửa báo cáo trên web (menu phòng → Báo cáo B7)");
       return reply(submitReport(room, name, op.content, op.attachments));
     }
     case "upload": {
@@ -558,6 +561,76 @@ function kickoff(room: string, meta: KickoffMeta, sendNow: boolean): ChatMessage
   deliver(msg);
   if (progress(room)) broadcastBoard(room);
   return msg;
+}
+
+// ---------- Mở ticket mới từ web (giống tcm start) ----------
+
+/** Các repo đã từng chạy agent (theo cấu hình chạy của các phòng, mới nhất trước) */
+function listRepos(): RepoInfo[] {
+  const out = new Map<string, RepoInfo>();
+  for (const r of store.listRooms()) {
+    // Cấu hình chạy ngầm, không có thì repo tcm start ghi trong meta (bản cũ / --wt)
+    const l = ((store.getLaunch(r.name) as RoomLaunch | null)?.repoDir ? store.getLaunch(r.name) : store.getMeta(r.name)) as RoomLaunch | null;
+    if (!l?.repoDir) continue;
+    const key = l.wslCwd ? `${l.distro ?? ""}:${l.wslCwd}` : l.repoDir.toLowerCase();
+    if (out.has(key)) continue;
+    const info: RepoInfo = {
+      repoDir: l.repoDir,
+      ...(l.wslCwd ? { wslCwd: l.wslCwd, distro: l.distro } : {}),
+      label: l.wslCwd ? `${l.wslCwd} (WSL ${l.distro ?? "Ubuntu"})` : l.repoDir,
+      lastRoom: r.name,
+      hasConfig: false,
+    };
+    try {
+      if (!existsSync(l.repoDir)) info.error = "Không truy cập được thư mục repo";
+      else {
+        const { dir, cfg } = loadRepoConfig(l.repoDir);
+        Object.assign(info, { hasConfig: !!dir, figma: cfg.figma || undefined, testAccount: cfg.testAccount || undefined });
+      }
+    } catch (e) {
+      info.error = e instanceof Error ? e.message : String(e);
+    }
+    out.set(key, info);
+  }
+  return [...out.values()];
+}
+
+/** Lưu kickoff, bật trực, hub chạy ngầm DEV + QA, gửi kickoff tới @all. Giống `tcm start <ticket> --figma <url>` chạy trong repo. */
+function startTicket(b: StartTicketRequest) {
+  const ticket = b?.ticket?.trim();
+  if (!ticket) throw new OpError("Thiếu mã ticket");
+  const room = b.room?.trim() || ticket;
+  if (!NAME_RE.test(room)) throw new OpError(`Tên phòng không hợp lệ: ${room} (chỉ chữ, số, _ . -)`);
+  const repo = b.repo;
+  if (!repo?.repoDir?.trim()) throw new OpError("Chưa chọn repo");
+  if (!existsSync(repo.repoDir)) throw new OpError(`Không truy cập được repo "${repo.repoDir}"`);
+  let cfg: ReturnType<typeof loadRepoConfig>["cfg"];
+  try {
+    cfg = loadRepoConfig(repo.repoDir).cfg;
+  } catch (e) {
+    throw new OpError(e instanceof Error ? e.message : String(e));
+  }
+  const ref = { repoDir: repo.repoDir, ...(repo.wslCwd ? { wslCwd: repo.wslCwd, distro: repo.distro || "Ubuntu" } : {}) };
+  const meta: KickoffMeta = {
+    ticket,
+    figma: b.figma?.trim() || cfg.figma,
+    testAccount: b.testAccount?.trim() || cfg.testAccount,
+    appRun: cfg.app?.run,
+    appUrl: cfg.app?.url,
+    planDir: cfg.paths?.plan,
+    testcaseDir: cfg.paths?.testcases,
+    runsDir: cfg.paths?.runs,
+    notes: b.notes?.trim() || cfg.notes,
+    ...ref,
+  };
+  store.ensureRoom(room);
+  if (store.closedAt(room)) reopenRoom(room, "user mở lại ticket từ web");
+  setDuty(room, true);
+  store.setLaunch(room, { ...ref, agents: cfg.agents ?? {} });
+  for (const role of DEFAULT_ROLES) startAgent(room, role, false);
+  // Hub giữ tin: agent vào phòng sau vẫn nhận ở lần gọi tool hub đầu tiên
+  const message = kickoff(room, meta, true);
+  return { room, message, terms: termsOf(room) };
 }
 
 /** Sau mỗi tin: tin của user hoặc có đổi bước = tiến triển; tin agent khác = đếm vòng lặp */
@@ -1048,6 +1121,17 @@ const server = createServer((req, res) => {
     return;
   }
   if (p === "/api/rooms") return json(res, 200, store.listRooms());
+  if (p === "/api/repos") return json(res, 200, listRepos());
+  if (p === "/api/start") {
+    if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+    readJson(req)
+      .then((body) => json(res, 200, startTicket(body as StartTicketRequest)))
+      .catch((e) => {
+        if (!(e instanceof OpError) && !(e instanceof SyntaxError)) console.error("[hub]", p, e);
+        json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      });
+    return;
+  }
 
   const at = p.match(/^\/att\/([^/]+)\/([^/]+)$/);
   if (at) {

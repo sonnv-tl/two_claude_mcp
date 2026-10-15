@@ -2,8 +2,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, resolve as resolvePath } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join, resolve as resolvePath } from "node:path";
 import {
   BROADCAST,
   DEFAULT_HUB_PORT,
@@ -59,6 +60,7 @@ function enqueue(msg: ChatMessage) {
 function onIncoming(msg: ChatMessage, allowPush: boolean) {
   if (seen.has(msg.id) || !isAddressedTo(msg, name)) return;
   seen.add(msg.id);
+  prefetchImages(msg.content);
   // Đang có wait_for_messages chờ → trả qua tool cho nhanh; ngoài ra ở chế độ channel thì push.
   if (allowPush && channelMode && mcpReady && waiters.length === 0) void push(msg);
   else enqueue(msg);
@@ -68,7 +70,7 @@ async function push(msg: ChatMessage) {
   const meta: Record<string, string> = { from: msg.from, to: msg.to, type: msg.type, msg_id: String(msg.id) };
   if (msg.replyTo) meta.reply_to = String(msg.replyTo);
   try {
-    await server.server.notification({ method: "notifications/claude/channel", params: { content: msg.content, meta } });
+    await server.server.notification({ method: "notifications/claude/channel", params: { content: localizeImages(msg.content), meta } });
     hub.ack(msg.id);
   } catch (e) {
     log("push channel lỗi, chuyển vào inbox:", e);
@@ -124,7 +126,43 @@ function time(iso: string) {
 function fmtMessage(m: ChatMessage): string {
   const reply = m.replyTo ? ` (trả lời #${m.replyTo})` : "";
   const to = m.to === BROADCAST ? "@all" : m.to;
-  return `#${m.id} [${m.type}] ${m.from} → ${to}${reply} · ${time(m.createdAt)}\n${m.content}`;
+  return `#${m.id} [${m.type}] ${m.from} → ${to}${reply} · ${time(m.createdAt)}\n${localizeImages(m.content)}`;
+}
+
+// ---------- Ảnh đính kèm (/att/...): tải về máy để agent xem bằng Read ----------
+
+const HTTP_BASE = url.replace(/^ws/, "http").replace(/\/ws\/?$/, "");
+const ATT_DIR = join(tmpdir(), "team-hub-att", room);
+const ATT_RE = /\]\((\/att\/[^)\s]+)\)/g;
+/** "/att/room/file" → đường dẫn file trên máy (đã tải xong) */
+const localAtt = new Map<string, string>();
+const fetching = new Set<string>();
+
+function prefetchImages(content: string) {
+  for (const [, path] of content.matchAll(ATT_RE)) {
+    if (localAtt.has(path) || fetching.has(path)) continue;
+    fetching.add(path);
+    fetch(HTTP_BASE + path)
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        mkdirSync(ATT_DIR, { recursive: true });
+        const file = join(ATT_DIR, decodeURIComponent(path.split("/").pop()!));
+        writeFileSync(file, Buffer.from(await r.arrayBuffer()));
+        localAtt.set(path, file);
+      })
+      .catch((e) => log("không tải được ảnh", path, e))
+      .finally(() => fetching.delete(path));
+  }
+}
+
+/** Link ảnh trong tin → đường dẫn file trên máy (xem bằng Read); chưa tải xong thì URL đầy đủ của hub */
+function localizeImages(content: string) {
+  let n = 0;
+  const out = content.replace(ATT_RE, (_, path: string) => {
+    n++;
+    return `](${localAtt.get(path) ?? HTTP_BASE + path})`;
+  });
+  return n ? `${out}\n(${n} ảnh đính kèm: xem bằng tool Read với đường dẫn file ở trên)` : out;
 }
 
 function fmtParticipants(ps: Participant[]): string {
@@ -329,6 +367,7 @@ server.registerTool(
   ({ limit, before_id }) =>
     guard(async () => {
       const msgs = await hub.history({ limit: limit ?? 30, beforeId: before_id });
+      msgs.forEach((m) => prefetchImages(m.content));
       if (!msgs.length) return result("Phòng chưa có tin nhắn.");
       return result(msgs.map(fmtMessage).join("\n\n---\n\n"));
     }),

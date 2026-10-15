@@ -2,12 +2,12 @@
 // tcm: mở một ticket cho cặp DEV/QA bằng một lệnh.
 //   tcm init                      tạo .team-hub.json + .team-hub.local.json, thêm file của tcm/agent vào .git/info/exclude
 //   tcm start <TICKET> [options]  bảo đảm hub chạy → lưu thông tin kickoff → hub chạy ngầm DEV + QA
-//                                 → mở web (nút 🖥 để xem terminal) → gửi kickoff (agent nhận khi vào phòng)
+//                                 → mở web (nút Terminal để xem) → gửi kickoff (agent nhận khi vào phòng)
 //       --room <tên>     tên phòng (mặc định = mã ticket)
 //       --figma <url>    link Figma thay cho link trong ticket (ghi đè .team-hub.json)
 //       --account "<user> / <pass>"   tài khoản test (ghi đè)
 //       --notes "<text>" ghi chú thêm vào kickoff
-//       --manual         không tự gửi kickoff (soạn/gửi bằng nút 🎫 Kickoff trên web)
+//       --manual         không tự gửi kickoff (soạn/gửi bằng menu phòng → Kickoff ticket trên web)
 //       --no-open        không mở web
 //       --wt             mở DEV | QA trong Windows Terminal (cách cũ) thay vì chạy ngầm trên hub
 //       --no-terminal    không chạy agent (tự mở bằng claude-as)
@@ -212,7 +212,7 @@ async function startBackground(room, cfg, { resume = false } = {}) {
   if (before.length) console.log(`… ${before.join(", ")} đang chạy ngầm: thay bằng session mới`);
   const terms = await api(roomPath(room, "agents"), { launch, resume });
   const pids = terms.filter((t) => t.running).map((t) => t.name);
-  console.log(`✔ chạy ngầm trên hub: ${pids.join(", ")}. Xem / đóng terminal bằng nút 🖥 trên web (đóng vẫn chạy).`);
+  console.log(`✔ chạy ngầm trên hub: ${pids.join(", ")}. Xem / đóng terminal bằng nút Terminal trên web (đóng vẫn chạy).`);
 }
 
 async function launchAgents(room, cfg, { resume = false } = {}) {
@@ -349,7 +349,7 @@ async function cmdStart() {
   if (!opts["no-open"]) openWeb(room);
 
   if (opts.manual) {
-    console.log("✔ đã lưu thông tin kickoff. Gửi bằng nút 🎫 Kickoff trên web khi sẵn sàng.");
+    console.log("✔ đã lưu thông tin kickoff. Gửi bằng menu phòng → Kickoff ticket trên web khi sẵn sàng.");
     return;
   }
   // Gửi ngay: hub giữ tin, agent vào phòng sau vẫn nhận được ở lần gọi tool hub đầu tiên (tin chưa đọc).
@@ -437,7 +437,7 @@ async function cmdVscode() {
   console.log(`✔ ghi ${file}`);
   ensureExclude([".vscode/tasks.json"]);
   console.log(`  VS Code: Ctrl+Shift+P → "Tasks: Run Task" → "tcm: start ticket" → nhập mã ticket. Vào lại ticket làm dở: "tcm: resume ticket".`);
-  console.log(`  DEV, QA chạy ngầm trên hub, xem / đóng terminal bằng nút 🖥 trên web.`);
+  console.log(`  DEV, QA chạy ngầm trên hub, xem / đóng terminal bằng nút Terminal trên web.`);
 }
 
 async function cmdResume() {
@@ -482,7 +482,7 @@ async function cmdClose() {
   if (!(await hubUp())) die("hub không chạy");
   const board = await api(roomPath(room, "close"), {});
   console.log(`✔ phòng "${room}": đã đóng ticket, tắt trực. Agent sẽ kết thúc lượt.`);
-  if (!board.report) console.log("⚠ chưa có báo cáo B7 (agent gửi bằng submit_report, hoặc viết trên web: nút 🏁)");
+  if (!board.report) console.log("⚠ chưa có báo cáo B7 (agent gửi bằng submit_report, hoặc viết trên web: menu phòng → Báo cáo B7)");
   else console.log(`  báo cáo B7: phiên bản ${board.reportVersions} (${board.report.author}) · ${HUB}${roomPath(room, "report.md")}`);
 }
 
