@@ -248,15 +248,31 @@ button.link { background: none; border: 0; padding: 0 4px; color: var(--c-dev); 
 .notice { color: var(--c-user); white-space: pre-wrap; word-break: break-all; }
 
 /* ---------- terminal agent chạy ngầm trên hub ---------- */
-.term-dock {
+.term-backdrop { z-index: 20; padding: 2vh 2vw; }
+.term-modal {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.term-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.term-modal-head .spacer { flex: 1; }
+.term-modal-body {
+  flex: 1;
+  min-height: 0;
   display: flex;
   gap: 8px;
-  padding: 8px 12px;
-  height: 46vh;
-  min-height: 180px;
-  resize: vertical;
-  overflow: hidden;
-  border-bottom: 1px solid var(--border, #2a2d33);
+  padding: 8px;
 }
 .term-panel {
   flex: 1 1 0;
@@ -291,3 +307,5 @@ button.link { background: none; border: 0; padding: 0 4px; color: var(--c-dev); 
 .term-btn.on {
   outline: 1px solid currentColor;
 }
+.duty.danger { color: #dc2626; border-color: #dc262655; }
+.duty.danger:hover:not(:disabled) { background: #dc262618; }

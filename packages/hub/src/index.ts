@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { format } from "node:util";
 
@@ -356,8 +356,8 @@ function handle(conn: Conn, op: ClientOp) {
     if (conn.kind !== null) return fail("Đã hello rồi");
     const room = op.room?.trim();
     if (!room || !NAME_RE.test(room)) return fail(`Tên phòng không hợp lệ: ${op.room}`);
-    store.ensureRoom(room);
 
+    // Web chỉ xem thì không tạo phòng (tab còn mở phòng vừa xoá sẽ không tạo lại phòng rỗng)
     if (op.kind === "viewer") {
       Object.assign(conn, { kind: "viewer", room });
       roomViewers(room).add(conn);
@@ -371,6 +371,7 @@ function handle(conn: Conn, op: ClientOp) {
     const name = op.name?.trim();
     if (!name || !NAME_RE.test(name) || name === "hub" || name === BROADCAST)
       return fail(`Tên participant không hợp lệ: ${op.name}`);
+    store.ensureRoom(room);
 
     // Session restart với cùng tên: thay kết nối cũ
     const existing = roomOnline(room).get(name);
@@ -437,6 +438,7 @@ function handle(conn: Conn, op: ClientOp) {
     case "send": {
       const content = op.content?.trim();
       if (!content) return fail("Nội dung rỗng");
+      store.ensureRoom(room);
       const to = (op.to ?? BROADCAST).trim();
       if (to === name) return fail("Không thể gửi tin cho chính mình");
       if (to !== BROADCAST && !store.getParticipant(room, to)) {
@@ -816,6 +818,27 @@ function roomSummary(room: string, forName: string | null): string {
   return out.join("\n");
 }
 
+/** Xoá phòng: tắt agent chạy ngầm, ngắt agent đang kết nối, xoá dữ liệu + ảnh, báo các tab web đang xem */
+function deleteRoom(room: string) {
+  terminals.forget(room);
+  for (const c of roomOnline(room).values()) {
+    send(c, { op: "kicked", reason: `Phòng "${room}" đã bị user xoá` });
+    c.ws.close();
+  }
+  online.delete(room);
+  for (const c of roomViewers(room)) send(c, { op: "deleted", room });
+  viewers.delete(room);
+  roomRts.delete(room);
+  for (const [k, r] of runtimes) {
+    if (!k.startsWith(`${room}/`)) continue;
+    if (r.wakeTimer) clearTimeout(r.wakeTimer);
+    runtimes.delete(k);
+  }
+  store.deleteRoom(room);
+  rmSync(join(ATT_DIR, room), { recursive: true, force: true });
+  console.log(`[hub] đã xoá phòng ${room}`);
+}
+
 function broadcastRoom(room: string) {
   const op: ServerOp = { op: "room", room, onDuty: store.isOnDuty(room), closed: !!store.closedAt(room) };
   for (const c of roomOnline(room).values()) send(c, op);
@@ -1043,7 +1066,7 @@ const server = createServer((req, res) => {
     return json(res, 200, boardOf(room));
   }
 
-  const t = p.match(/^\/api\/rooms\/([^/]+)\/(summary|report\.md|report|close|reopen)$/);
+  const t = p.match(/^\/api\/rooms\/([^/]+)\/(summary|report\.md|report|close|reopen|delete)$/);
   if (t) {
     const room = decodeURIComponent(t[1]);
     if (!NAME_RE.test(room) || !store.roomExists(room)) return json(res, 404, { error: `Không có phòng "${room}"` });
@@ -1066,6 +1089,10 @@ const server = createServer((req, res) => {
       .then((body) => {
         const b = body as { content?: string; report?: string };
         if (t[2] === "report") return json(res, 200, editReport(room, b.content ?? ""));
+        if (t[2] === "delete") {
+          deleteRoom(room);
+          return json(res, 200, { ok: true });
+        }
         if (t[2] === "close") {
           closeRoom(room, b.report);
           return json(res, 200, boardOf(room));

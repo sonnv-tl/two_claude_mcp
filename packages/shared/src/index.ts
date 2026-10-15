@@ -232,6 +232,8 @@ export type ServerOp =
   | { op: "error"; reqId?: string; error: string }
   | { op: "kicked"; reason: string }
   | { op: "terms"; room: string; terms: TermInfo[] }
+  /** Phòng vừa bị xoá trên web: tab đang xem chuyển sang phòng khác */
+  | { op: "deleted"; room: string }
   /** Màn hình hiện tại của terminal (gửi khi attach), sau đó là các term_data */
   | { op: "term_snapshot"; name: string; data: string; cols: number; rows: number }
   | { op: "term_data"; name: string; data: string }

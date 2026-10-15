@@ -150,6 +150,7 @@ Persona mặc định nằm trong `packages/bridge/src/personas.ts`. **DEV**: so
 
 - QA gửi báo cáo chung bằng `submit_report` → tin **báo cáo** gửi bạn, web báo "📄 Báo cáo B7 chờ bạn duyệt", nút trên tiêu đề phòng đổi thành **📄 Báo cáo B7**.
 - Bấm nút đó: xem / **sửa** báo cáo (mỗi lần lưu là một phiên bản), **tải .md**, **Copy markdown**, **✅ Duyệt & đóng ticket**. Team Hub **không ghi gì lên Backlog**: muốn đưa báo cáo lên ticket thì bạn tự dán. Chưa có báo cáo thì có thể "nhắc DEV/QA gửi báo cáo" hoặc "tạo nháp từ bảng bug" để tự viết.
+- **🗑 Xoá phòng** (trên tiêu đề phòng): xoá hẳn phòng (tin nhắn, bug, tiến độ, báo cáo B7, ảnh, thông tin kickoff), tắt session chạy ngầm, ngắt agent đang kết nối. Không hoàn tác được, dùng khi muốn làm lại ticket từ đầu.
 - **Duyệt & đóng ticket**: lưu báo cáo, tắt trực, hub nhắn agent "🏁 dừng việc, kết thúc lượt": agent không trực nữa (không tốn lượt gọi `wait_for_messages`), session ngầm vẫn mở ở prompt. Nhắn cho agent bất cứ lúc nào thì nó được đánh thức để trả lời, rồi nghỉ tiếp. Phòng hiện ✓ ở cột trái. Mở lại bằng nút **Mở lại ticket**, `tcm resume` hoặc gửi kickoff mới.
 
 ## Biến môi trường

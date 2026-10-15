@@ -128,6 +128,20 @@ export class Store {
     this.db.prepare("UPDATE rooms SET closed_at = ? WHERE name = ?").run(closed ? now() : null, room);
   }
 
+  /** Xoá hẳn phòng và mọi dữ liệu của nó (tin, thành viên, bug, báo cáo, tiến độ, meta) */
+  deleteRoom(room: string): void {
+    this.db.exec("BEGIN");
+    try {
+      for (const t of ["messages", "participants", "room_meta", "room_launch", "steps", "bugs", "bug_events", "reports"])
+        this.db.prepare(`DELETE FROM ${t} WHERE room = ?`).run(room);
+      this.db.prepare("DELETE FROM rooms WHERE name = ?").run(room);
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+  }
+
   roomExists(room: string): boolean {
     return !!this.db.prepare("SELECT 1 FROM rooms WHERE name = ?").get(room);
   }

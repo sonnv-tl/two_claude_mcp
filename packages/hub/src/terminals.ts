@@ -170,6 +170,15 @@ export class Terminals {
     return true;
   }
 
+  /** Tắt và bỏ hẳn mọi terminal của phòng (xoá phòng) */
+  forget(room: string) {
+    for (const [k, e] of this.entries) {
+      if (e.room !== room) continue;
+      this.stop(room, e.name);
+      this.entries.delete(k);
+    }
+  }
+
   stopAll() {
     for (const e of this.entries.values()) {
       try {

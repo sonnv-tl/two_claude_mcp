@@ -82,37 +82,23 @@ function useHashRoom(): [string | null, (r: string) => void] {
   return [room, (r) => (location.hash = `/${encodeURIComponent(r)}`)];
 }
 
-/** Terminal đang mở trên web, nhớ theo phòng (localStorage) */
-function useOpenTerms(room: string | null): [string[], (name: string, open?: boolean) => void] {
-  const key = `tcm.terms.${room}`;
-  const read = () => {
-    try {
-      return JSON.parse(localStorage.getItem(key) ?? "[]") as string[];
-    } catch {
-      return [];
-    }
-  };
-  const [open, setOpen] = useState<string[]>(read);
-  useEffect(() => setOpen(read()), [key]); // eslint-disable-line react-hooks/exhaustive-deps
+/** Terminal đang mở trong popup (theo phòng; tải lại trang thì đóng) */
+function useOpenTerms(room: string | null) {
+  const [open, setOpen] = useState<string[]>([]);
+  useEffect(() => setOpen([]), [room]);
   const toggle = (name: string, want?: boolean) =>
     setOpen((cur) => {
       const on = want ?? !cur.includes(name);
-      const next = on ? (cur.includes(name) ? cur : [...cur, name]) : cur.filter((n) => n !== name);
-      try {
-        localStorage.setItem(key, JSON.stringify(next));
-      } catch {
-        /* bỏ qua */
-      }
-      return next;
+      return on ? (cur.includes(name) ? cur : [...cur, name]) : cur.filter((n) => n !== name);
     });
-  return [open, toggle];
+  return { openTerms: open, toggleTerm: toggle, closeTerms: () => setOpen([]) };
 }
 
 export function App() {
-  const rooms = useRooms();
+  const { rooms, reload: reloadRooms } = useRooms();
   const [room, setRoom] = useHashRoom();
-  const { messages, participants, conn, send, onDuty, setDuty, board, updateBug, terms, raw, openTerm, startAgent, stopAgent } = useRoom(room);
-  const [openTerms, toggleTerm] = useOpenTerms(room);
+  const { messages, participants, conn, send, onDuty, setDuty, board, updateBug, terms, raw, openTerm, startAgent, stopAgent, deleted } = useRoom(room);
+  const { openTerms, toggleTerm, closeTerms } = useOpenTerms(room);
   const termOf = (name: string) => terms.find((t) => t.name === name);
   const shownTerms = openTerms.filter((n) => termOf(n));
   const act = (p: Promise<unknown>) => void p.catch((e) => alert(e instanceof Error ? e.message : String(e)));
@@ -148,6 +134,39 @@ export function App() {
     if (!room && rooms.length) setRoom(rooms[0].name);
   }, [room, rooms]);
 
+  // Phòng đang xem bị xoá (tab này hoặc tab khác) → sang phòng khác
+  useEffect(() => {
+    if (!deleted || deleted !== room) return;
+    reloadRooms();
+    const next = rooms.find((r) => r.name !== deleted);
+    if (next) setRoom(next.name);
+    else history.replaceState(null, "", location.pathname);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deleted]);
+
+  const deleteRoom = async () => {
+    if (!room) return;
+    const info = rooms.find((r) => r.name === room);
+    const running = terms.filter((t) => t.running).map((t) => t.name);
+    const ok = confirm(
+      `Xoá phòng #${room}?\n\n` +
+        `Mất toàn bộ ${info?.messageCount ?? 0} tin nhắn, bảng bug, tiến độ, báo cáo B7, ảnh và thông tin kickoff của phòng.` +
+        (running.length ? `\nSession đang chạy ngầm (${running.join(", ")}) sẽ bị tắt.` : "") +
+        "\n\nKhông hoàn tác được.",
+    );
+    if (!ok) return;
+    try {
+      const r = await fetch(`/api/rooms/${encodeURIComponent(room)}/delete`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`);
+      reloadRooms();
+      const next = rooms.find((x) => x.name !== room);
+      if (next) setRoom(next.name);
+      else history.replaceState(null, "", location.pathname);
+    } catch (e) {
+      alert(`Không xoá được phòng: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
   const visible = useMemo(() => messages.filter((m) => !hidden.has(m.type)), [messages, hidden]);
   const byId = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages]);
 
@@ -162,6 +181,45 @@ export function App() {
     <div className="layout">
       {kickoffOpen && room && <KickoffDialog room={room} onClose={() => setKickoffOpen(false)} />}
       {reportOpen && room && <ReportDialog room={room} board={board} send={send} onClose={() => setReportOpen(false)} />}
+      {shownTerms.length > 0 && conn === "open" && (
+        // Không đóng bằng Esc: Esc cần cho Claude trong terminal (dừng lượt đang chạy)
+        <div className="modal-backdrop term-backdrop" onMouseDown={(e) => e.target === e.currentTarget && closeTerms()}>
+          <div className="term-modal" role="dialog" aria-label="Terminal agent">
+            <header className="term-modal-head">
+              <strong>🖥 Terminal · #{room}</strong>
+              <span className="small muted">Đóng chỉ ẩn đi, session vẫn chạy ngầm trên hub</span>
+              <span className="spacer" />
+              {terms.map((t) => (
+                <button
+                  key={t.name}
+                  className={`chip term-btn ${openTerms.includes(t.name) ? "on" : ""}`}
+                  style={{ color: colorOf(t.name, participants) }}
+                  title={openTerms.includes(t.name) ? `Ẩn ${t.name}` : `Xem thêm ${t.name}`}
+                  onClick={() => toggleTerm(t.name)}
+                >
+                  {t.name}{t.running ? "" : " (tắt)"}
+                </button>
+              ))}
+              <button className="link" onClick={closeTerms}>✕ đóng</button>
+            </header>
+            <div className="term-modal-body">
+              {shownTerms.map((n) => (
+                <TerminalPanel
+                  key={`${room}/${n}`}
+                  name={n}
+                  info={termOf(n)}
+                  color={colorOf(n, participants)}
+                  openTerm={openTerm}
+                  raw={raw}
+                  onStart={() => act(startAgent(n))}
+                  onStop={() => act(stopAgent(n))}
+                  onClose={() => toggleTerm(n, false)}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       <aside className="rooms">
         <h1>Team Hub</h1>
         <div className="section-title">Phòng</div>
@@ -203,6 +261,14 @@ export function App() {
             >
               {board.closedAt ? "✓ Đã đóng" : board.report ? "📄 Báo cáo B7" : "🏁 Đóng ticket"}
             </button>
+            <button
+              className="duty danger"
+              disabled={!room || !rooms.some((r) => r.name === room)}
+              onClick={() => void deleteRoom()}
+              title="Xoá hẳn phòng: tin nhắn, bug, báo cáo B7, ảnh. Tắt session chạy ngầm. Không hoàn tác được."
+            >
+              🗑 Xoá phòng
+            </button>
           </div>
           <div className="filters">
             {MESSAGE_TYPES.map((t) => (
@@ -213,23 +279,6 @@ export function App() {
           </div>
         </header>
         <Stepper board={board} colorOf={(n) => colorOf(n, participants)} />
-        {shownTerms.length > 0 && conn === "open" && (
-          <div className="term-dock">
-            {shownTerms.map((n) => (
-              <TerminalPanel
-                key={`${room}/${n}`}
-                name={n}
-                info={termOf(n)}
-                color={colorOf(n, participants)}
-                openTerm={openTerm}
-                raw={raw}
-                onStart={() => act(startAgent(n))}
-                onStop={() => act(stopAgent(n))}
-                onClose={() => toggleTerm(n, false)}
-              />
-            ))}
-          </div>
-        )}
         <MessageList messages={visible} byId={byId} participants={participants} onReply={setReplyTo} />
         <Composer
           key={room ?? ""}

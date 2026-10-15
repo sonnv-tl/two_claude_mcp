@@ -33,6 +33,8 @@ export function useRoom(room: string | null) {
   const [board, setBoard] = useState<Board>(EMPTY_BOARD);
   const [terms, setTerms] = useState<TermInfo[]>([]);
   const termSubs = useRef(new Map<string, TermSub>());
+  /** Phòng đang xem vừa bị xoá (từ tab này hoặc tab khác) */
+  const [deleted, setDeleted] = useState<string | null>(null);
   const lastId = useRef(0);
   const wsRef = useRef<WebSocket | null>(null);
   const pending = useRef(new Map<string, { resolve: (m: ChatMessage) => void; reject: (e: Error) => void }>());
@@ -81,6 +83,7 @@ export function useRoom(room: string | null) {
         else if (op.op === "participants") setParticipants(op.participants);
         else if (op.op === "board") setBoard(op.board);
         else if (op.op === "terms") setTerms(op.terms);
+        else if (op.op === "deleted") setDeleted(op.room);
         else if (op.op === "term_snapshot" || op.op === "term_data" || op.op === "term_exit") termSubs.current.get(op.name)?.onOp(op);
         else if (op.op === "result" || op.op === "error") {
           const p = op.reqId ? pending.current.get(op.reqId) : undefined;
@@ -148,11 +151,12 @@ export function useRoom(room: string | null) {
   const startAgent = useCallback((name: string) => request<boolean>({ op: "agent_start", name }), [request]);
   const stopAgent = useCallback((name: string) => request<boolean>({ op: "agent_stop", name }), [request]);
 
-  return { messages, participants, conn, send, onDuty, setDuty, board, updateBug, terms, raw, openTerm, startAgent, stopAgent };
+  return { messages, participants, conn, send, onDuty, setDuty, board, updateBug, terms, raw, openTerm, startAgent, stopAgent, deleted };
 }
 
 export function useRooms(intervalMs = 5000) {
   const [rooms, setRooms] = useState<RoomInfo[]>([]);
+  const [tick, setTick] = useState(0);
   useEffect(() => {
     let alive = true;
     const load = () =>
@@ -166,6 +170,8 @@ export function useRooms(intervalMs = 5000) {
       alive = false;
       clearInterval(t);
     };
-  }, [intervalMs]);
-  return rooms;
+  }, [intervalMs, tick]);
+  /** Tải lại danh sách phòng ngay (vd. sau khi xoá phòng) */
+  const reload = useCallback(() => setTick((n) => n + 1), []);
+  return { rooms, reload };
 }

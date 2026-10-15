@@ -438,6 +438,24 @@ try {
   const listed2 = await (await fetch(`${HTTP}/api/rooms/${room}/agents`)).json();
   check("tắt agent từ web", stopped.op === "result" && listed2.find((t) => t.name === "qa")?.running === false, JSON.stringify(listed2));
 
+  // ---- Xoá phòng trên web ----
+  const evilDel = await fetch(`${HTTP}/api/rooms/${room}/delete`, { method: "POST", headers: { origin: "http://evil.example" }, body: "{}" });
+  check("trang web lạ không xoá được phòng (origin)", evilDel.status === 403);
+  await postJson("agents", { launch: { repoDir: tmp }, names: ["qa"] });
+  const del = await postJson("delete");
+  await sleep(300);
+  const roomsAfter = await (await fetch(`${HTTP}/api/rooms`)).json();
+  check("xoá phòng → không còn trong danh sách", del.status === 200 && !roomsAfter.some((r) => r.name === room), JSON.stringify(roomsAfter));
+  check("tab web đang xem nhận tin phòng đã xoá", web.inbox.some((o) => o.op === "deleted" && o.room === room));
+  check("agent chạy ngầm của phòng bị tắt", (await (await fetch(`${HTTP}/api/rooms/${room}/agents`)).json()).length === 0);
+  const afterDel = await qa2.call("list_participants");
+  check("agent đang kết nối bị ngắt khỏi phòng", afterDel.isError && afterDel.text.includes("xoá"), afterDel.text);
+  const ghost = await viewer();
+  await sleep(300);
+  check("tab web mở lại phòng đã xoá không tạo lại phòng", !(await (await fetch(`${HTTP}/api/rooms`)).json()).some((r) => r.name === room));
+  check("xoá phòng không tồn tại → 404", (await postJson("delete")).status === 404);
+  ghost.ws.close();
+
   web.ws.close();
   await devCh.client.close();
   await qa2.client.close();
